@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# Cython build outputs
+*.c
+*.cpp
+*.so
+*.pyd
+*.o
+
+test.py
+
+# Sphinx build outputs
+docs/_build/
+
+# Virtual environments
+venv/
+.env/
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
