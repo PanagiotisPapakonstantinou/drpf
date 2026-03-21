@@ -272,17 +272,28 @@ cdef class DRPF:
 
         return np_results
 
-    def plot_query_leaves(self, np.ndarray[np.float32_t, ndim=1] query, str method='pca', int bg_samples=2500):
+    def plot_query_leaves(self, np.ndarray[np.float32_t, ndim=1] query,
+                      str method='pca', int bg_samples=2500,
+                      base_color='tab:blue', grey=(0.8, 0.8, 0.8),
+                      clip_percentiles=(5, 95), float power=1.0):
         """
-        Projects the dataset into 2D and visualizes the query alongside the exact 
-        leaf candidate points found in the forest.
+        Projects the dataset into 2D and visualizes the query alongside the exact
+        leaf candidate points found in the forest. Candidate points are shaded
+        from `base_color` (near = intense) toward `grey` (far = greyed out).
+
+        New params:
+        - base_color: matplotlib color name or RGB tuple for the base hue
+        - grey: RGB tuple to blend toward for far points
+        - clip_percentiles: (low_pct, high_pct) used for robust distance scaling
+        - power: exponent applied to normalized distances to adjust contrast
+                 (power < 1 -> more points appear intense; power > 1 -> sharper falloff)
         """
         import matplotlib.pyplot as plt
         import matplotlib.colors as mcolors
-        
+
         if not self._is_indexed:
              raise RuntimeError("Index is empty. Call index() first.")
-             
+
         candidates = self.get_forest_indices(query, index=-1)
         if len(candidates) == 0:
             print("No candidates found for this query.")
@@ -290,7 +301,7 @@ cdef class DRPF:
 
         point_trees = {}
         for row in candidates:
-            t_idx, d_idx = row[0], row[1]
+            t_idx, d_idx = int(row[0]), int(row[1])
             if d_idx not in point_trees:
                 point_trees[d_idx] = []
             point_trees[d_idx].append(t_idx)
@@ -300,10 +311,8 @@ cdef class DRPF:
 
         all_indices = np.arange(data.shape[0])
         bg_pool = np.setdiff1d(all_indices, cand_indices, assume_unique=True)
-        
         bg_size = min(bg_samples, len(bg_pool))
         bg_indices = np.random.choice(bg_pool, bg_size, replace=False)
-        # --------------------------------------
 
         points_to_project = np.vstack([
             data[bg_indices],
@@ -325,26 +334,54 @@ cdef class DRPF:
             raise ValueError("Method must be 'pca', 'tsne', or 'umap'")
 
         proj = reducer.fit_transform(points_to_project)
-        
+
         proj_bg = proj[:bg_size]
         proj_cand = proj[bg_size:bg_size + len(cand_indices)]
         proj_query = proj[-1]
 
-        base_cmap = plt.colormaps.get_cmap('tab10')
-        cand_colors = []
-        for d_idx in cand_indices:
-            trees = point_trees[d_idx]
-            mixed_color = np.mean([np.array(base_cmap(t % 10)[:3]) for t in trees], axis=0)
-            cand_colors.append(mixed_color)
+        cand_vecs = data[cand_indices]                     
+
+        q = np.ascontiguousarray(query.reshape(1, -1), dtype=np.float32)[0]
+        diff = cand_vecs - q
+        dists = np.sum(diff * diff, axis=1)    
+
+        if len(dists) == 0:
+            print("No candidate vectors to color.")
+            return
+
+        lo_pct, hi_pct = clip_percentiles
+        lo = np.percentile(dists, lo_pct)
+        hi = np.percentile(dists, hi_pct)
+        
+        if hi <= lo:
+
+            lo, hi = dists.min(), dists.max()
+            if hi == lo:
+                hi = lo + 1e-6
+
+
+        norm = np.clip((dists - lo) / (hi - lo), 0.0, 1.0)
+
+        alpha = np.exp(-norm * 2)
+
+        if isinstance(base_color, str):
+            base_rgb = mcolors.to_rgb(base_color)
+        else:
+            base_rgb = tuple(base_color)
+
+        grey_rgb = tuple(grey)
+
+        cand_colors = np.outer(alpha, np.ones(3)) * np.array(base_rgb)[None, :] + \
+                      np.outer(1.0 - alpha, np.ones(3)) * np.array(grey_rgb)[None, :]
 
         plt.figure(figsize=(10, 8))
-        
+
         plt.scatter(proj_bg[:, 0], proj_bg[:, 1], c='#444444', s=10, alpha=0.3, label='Data Distribution')
-        
-        plt.scatter(proj_cand[:, 0], proj_cand[:, 1], c=cand_colors, s=10, 
+
+        plt.scatter(proj_cand[:, 0], proj_cand[:, 1], c=cand_colors, s=20,
                     edgecolor='white', linewidth=0.2, zorder=3, label='Leaf Candidates')
-        
-        plt.scatter(proj_query[0], proj_query[1], c='red', marker='*', s=150, 
+
+        plt.scatter(proj_query[0], proj_query[1], c='red', marker='*', s=150,
                     edgecolor='black', zorder=4, label='Query Point')
 
         plt.title(f"DRPF Candidate Space ({method.upper()})")
