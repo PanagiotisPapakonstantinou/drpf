@@ -90,61 +90,110 @@ print(f"Using Eigen from: {eigen_include}")
 # ===============================================================
 def configure_macos_compiler():
     global compile_flags, link_flags
-    
+
+    # 0) Respect explicit user choice first
+    if os.environ.get("CC") and os.environ.get("CXX"):
+        print(f"Using user-specified compiler: {os.environ['CC']} / {os.environ['CXX']}")
+        return
+
     try:
-        # brew --prefix handles both Intel (/usr/local) and Apple Silicon (/opt/homebrew)
         brew_prefix = subprocess.check_output(["brew", "--prefix"], text=True).strip()
     except Exception:
         raise RuntimeError("Homebrew is required on macOS for OpenMP support.")
 
     brew_bin = os.path.join(brew_prefix, "bin")
 
-    # 1. Try to find Homebrew GCC first
+    # 1) Prefer Homebrew LLVM/Clang on macOS
+    llvm_root = os.path.join(brew_prefix, "opt", "llvm")
+    llvm_clang = os.path.join(llvm_root, "bin", "clang")
+    llvm_clangxx = os.path.join(llvm_root, "bin", "clang++")
+    omp_root = os.path.join(brew_prefix, "opt", "libomp")
+
+    if os.path.exists(llvm_clang) and os.path.exists(llvm_clangxx):
+        if not os.path.exists(omp_root):
+            print("libomp not found. Attempting to install via Homebrew...")
+            subprocess.check_call(["brew", "install", "libomp"])
+
+        print(f"Using Homebrew LLVM Clang: {llvm_clangxx}")
+        os.environ["CC"] = llvm_clang
+        os.environ["CXX"] = llvm_clangxx
+
+        compile_flags = [
+            "-std=c++20",
+            "-O3",
+            "-ffast-math",
+            "-funroll-loops",
+            "-fno-strict-aliasing",
+            "-DNDEBUG",
+            "-fopenmp",
+            f"-I{llvm_root}/include",
+            f"-I{omp_root}/include",
+        ]
+        link_flags = [
+            "-fopenmp",
+            f"-L{llvm_root}/lib",
+            f"-L{omp_root}/lib",
+            "-lomp",
+        ]
+        return
+
+    # 2) Fallback to Homebrew GCC, but pick newest by numeric version
     try:
-        gcc_candidates = [f for f in os.listdir(brew_bin) if f.startswith("g++-")]
+        gcc_candidates = [f for f in os.listdir(brew_bin) if re.fullmatch(r"g\+\+-\d+", f)]
     except FileNotFoundError:
         gcc_candidates = []
 
     if gcc_candidates:
-        gcc_candidates.sort(reverse=True) # Gets the latest version (e.g., g++-14)
+        gcc_candidates.sort(key=lambda x: int(x.split("-")[-1]), reverse=True)
         gpp_bin = os.path.join(brew_bin, gcc_candidates[0])
         gcc_bin = gpp_bin.replace("g++", "gcc")
 
-        print(f"Found Homebrew GCC: {gpp_bin}")
+        print(f"Using Homebrew GCC: {gpp_bin}")
         os.environ["CC"] = gcc_bin
         os.environ["CXX"] = gpp_bin
 
         compile_flags = [
-            "-std=c++20", "-O3", "-march=native", "-ffast-math",
-            "-funroll-loops", "-fno-strict-aliasing", "-DNDEBUG", "-fopenmp"
+            "-std=c++20",
+            "-O3",
+            "-ffast-math",
+            "-funroll-loops",
+            "-fno-strict-aliasing",
+            "-DNDEBUG",
+            "-fopenmp",
         ]
         link_flags = ["-fopenmp"]
         return
 
-    # 2. Fallback: Apple Clang
-    print("Homebrew GCC not found. Falling back to Apple Clang...")
+    # 3) Last resort: Apple Clang + libomp
+    print("Homebrew LLVM/GCC not found. Falling back to Apple Clang...")
     clang_bin = shutil.which("clang")
     clangpp_bin = shutil.which("clang++")
 
     if not clang_bin or not clangpp_bin:
         raise RuntimeError("Apple Clang not found. Please install Xcode Command Line Tools.")
 
-    os.environ["CC"] = clang_bin
-    os.environ["CXX"] = clangpp_bin
-
-    # Ensure libomp is installed for Apple Clang OpenMP support
-    omp_root = os.path.join(brew_prefix, "opt", "libomp")
     if not os.path.exists(omp_root):
         print("libomp not found. Attempting to install via Homebrew...")
         subprocess.check_call(["brew", "install", "libomp"])
 
+    os.environ["CC"] = clang_bin
+    os.environ["CXX"] = clangpp_bin
+
     compile_flags = [
-        "-std=c++20", "-O3", "-march=native", "-ffast-math",
-        "-funroll-loops", "-fno-strict-aliasing", "-DNDEBUG",
-        "-Xpreprocessor", "-fopenmp",
-        f"-I{omp_root}/include"
+        "-std=c++20",
+        "-O3",
+        "-ffast-math",
+        "-funroll-loops",
+        "-fno-strict-aliasing",
+        "-DNDEBUG",
+        "-Xpreprocessor",
+        "-fopenmp",
+        f"-I{omp_root}/include",
     ]
-    link_flags = [f"-L{omp_root}/lib", "-lomp"]
+    link_flags = [
+        f"-L{omp_root}/lib",
+        "-lomp",
+    ]
 
 # ===============================================================
 # 4. Apply platform flags
@@ -158,7 +207,14 @@ elif sys.platform.startswith("linux"):
     ]
     link_flags = ["-fopenmp"]
 else:  # Windows
-    compile_flags = ["/std:c++20", "/O2", "/fp:fast", "/DNDEBUG", "/openmp"]
+    compile_flags = [
+        "/std:c++20",
+        "/O2",
+        "/fp:fast",
+        "/DNDEBUG",
+        "/openmp:experimental",
+        "/Zc:cplusplus",
+    ]
     link_flags = []
 
 # ===============================================================
@@ -181,7 +237,7 @@ ext = Extension(
 # ===============================================================
 setup(
     name="drpf",
-    version="0.9.0",
+    version="0.9.5",
     author="Panagiotis Papakonstantinou",
     author_email="panagiotispapakonstantinou15@gmail.com",
     description="Dense Random Projection Forest for Fast ANN Search",
