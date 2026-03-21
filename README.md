@@ -1,7 +1,7 @@
 # DRPF: Dense Random Projection Forest
-
 [![Documentation Status](https://readthedocs.org/projects/drpf/badge/?version=latest)](https://drpf.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/Pappan24/drpf/actions/workflows/ci.yml/badge.svg)](https://github.com/Pappan24/drpf/actions/workflows/ci.yml)
 
 This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides efficient and scalable implementations for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
 
