@@ -28,6 +28,11 @@
 #define PREFETCH(addr)
 #endif
 
+#ifdef _MSC_VER
+#define attribute(x)
+#define restrict restrict
+#endif
+
 /**
  * @brief KDE-based Implementation of the Binary Split Tree.
  */
