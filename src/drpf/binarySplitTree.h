@@ -309,7 +309,7 @@ public:
         }
     }
 
-    inline Node &findLeafForQuery(const float *__restrict q) __attribute__((always_inline))
+    FORCE_INLINE Node &findLeafForQuery(const float *__restrict q)
     {
         int idx = root_idx;
         Node *__restrict nodes = nodePool.data();
