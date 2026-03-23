@@ -28,11 +28,6 @@
 #define PREFETCH(addr)
 #endif
 
-#ifdef _MSC_VER
-#define attribute(x)
-#define restrict restrict
-#endif
-
 /**
  * @brief KDE-based Implementation of the Binary Split Tree.
  */
@@ -392,12 +387,13 @@ public:
         return indices;
     }
 
-    inline void exact_ann(const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
-                          const Eigen::Ref<const Eigen::RowVectorXf> q,
-                          const float *__restrict proj_q,
-                          int k,
-                          int *results,
-                          SearchContext &ctx) __attribute__((hot, always_inline))
+    FORCE_INLINE void exact_ann(
+        const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
+        const Eigen::Ref<const Eigen::RowVectorXf> q,
+        const float *__restrict proj_q,
+        int k,
+        int *results,
+        SearchContext &ctx)
     {
         int rows = static_cast<int>(data.rows());
         ctx.resize(rows, max_search_buffer_size);
@@ -479,7 +475,8 @@ public:
             results[i] = -1;
     }
 
-    std::vector<int> ann_batch(const float *queries, int n_queries, int dim, int k)
+    std::vector<int>
+    ann_batch(const float *queries, int n_queries, int dim, int k)
     {
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
         if (dim != data.cols())
