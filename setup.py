@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import shutil
+import re 
 import numpy as np
 
 # Global variables for compiler flags
