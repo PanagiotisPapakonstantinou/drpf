@@ -18,6 +18,12 @@
 #include <string>
 #include <vector>
 
+#if defined(_MSC_VER)
+#define FORCE_INLINE __forceinline
+#else
+#define FORCE_INLINE inline __attribute__((always_inline))
+#endif
+
 /**
  * @brief Represents a single node in the binary split tree.
  */
