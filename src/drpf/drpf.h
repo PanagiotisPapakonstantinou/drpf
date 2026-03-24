@@ -289,6 +289,12 @@ public:
         true_depth = 0;
     }
 
+    struct ANNResult
+    {
+        std::vector<int> indices;
+        std::vector<float> distances_sq;
+    };
+
     void index(const float *data_ptr,
                size_t length,
                int dimensions)
@@ -393,6 +399,7 @@ public:
         const float *__restrict proj_q,
         int k,
         int *results,
+        float *distances_sq,
         SearchContext &ctx)
     {
         int rows = static_cast<int>(data.rows());
@@ -428,6 +435,7 @@ public:
         if (n_cands == 0)
         {
             std::fill(results, results + k, -1);
+            std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
             return;
         }
 
@@ -469,14 +477,22 @@ public:
                   [&](int a, int b)
                   { return ctx.scores[a] < ctx.scores[b]; });
 
+        int cand;
         for (int i = 0; i < k_eff; i++)
-            results[i] = ctx.candidates[ctx.indices_buffer[i]];
+        {
+            cand = ctx.indices_buffer[i];
+            results[i] = ctx.candidates[cand];
+            distances_sq[i] = ctx.scores[cand];
+        }
+
         for (int i = k_eff; i < k; i++)
+        {
             results[i] = -1;
+            distances_sq[i] = std::numeric_limits<float>::max();
+        }
     }
 
-    std::vector<int>
-    ann_batch(const float *queries, int n_queries, int dim, int k)
+    ANNResult ann_batch(const float *queries, int n_queries, int dim, int k)
     {
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
         if (dim != data.cols())
@@ -487,7 +503,10 @@ public:
 
         const int projDim = projected.cols();
         const float *proj_data = projected.data();
-        std::vector<int> results(n_queries * k);
+
+        ANNResult out;
+        out.indices.resize(n_queries * k);
+        out.distances_sq.resize(n_queries * k);
 
 #pragma omp parallel
         {
@@ -498,14 +517,17 @@ public:
             {
                 const Eigen::Map<const Eigen::RowVectorXf> q(queries + i * dim, dim);
                 const float *proj_q = proj_data + static_cast<size_t>(i) * projDim;
-                this->exact_ann(data, q, proj_q, k, &results[i * k], ctx);
+                this->exact_ann(data, q, proj_q, k,
+                                &out.indices[i * k],
+                                &out.distances_sq[i * k],
+                                ctx);
             }
         }
 
-        return results;
+        return out;
     }
 
-    std::vector<int> ann(const float *query_ptr, std::size_t length, int k)
+    ANNResult ann(const float *query_ptr, std::size_t length, int k)
     {
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
         const Eigen::Map<const Eigen::RowVectorXf> query(query_ptr, 1, length);
@@ -513,11 +535,16 @@ public:
         Eigen::RowVectorXf projectedQuery(projectionMatrix.cols());
         projectedQuery.noalias() = query * projectionMatrix;
 
-        std::vector<int> results(k);
+        ANNResult out;
+        out.indices.resize(k);
+        out.distances_sq.resize(k);
 
         SearchContext ctx;
-        this->exact_ann(data, query, projectedQuery.data(), k, results.data(), ctx);
+        this->exact_ann(data, query, projectedQuery.data(), k,
+                        &out.indices[0],
+                        &out.distances_sq[0],
+                        ctx);
 
-        return results;
+        return out;
     }
 };
