@@ -12,11 +12,15 @@ cimport numpy as np
 
 # C++ class declaration
 cdef extern from "drpf.h":
+    cdef cppclass ANNResult "DRPF::ANNResult":
+        vector[int]   indices
+        vector[float] distances_sq
+
     cdef cppclass CDRPF "DRPF":
         CDRPF(int num_trees, int split_depth, int no_of_ss, bool approximate_search_space_size, float bw_modifier, int seed, float min_ratio, int num_threads)
         void index(const float* data_ptr, size_t length, int dimensions) except + nogil
-        vector[int] ann(const float* data, size_t length, int k) except + nogil
-        vector[int] ann_batch(const float* queries, int n_queries, int dim, int k) except + nogil
+        ANNResult ann(const float* data, size_t length, int k) except + nogil
+        ANNResult ann_batch(const float* queries, int n_queries, int dim, int k) except + nogil
         vector[int] getLeafNodeSizes(int index) except +
         vector[pair[int, int]] getForestIndices(const float* query_ptr, size_t length, int index) except +
 
@@ -113,76 +117,138 @@ cdef class DRPF:
             self.c_drpf.index(data_ptr, total_length, cols)
         self._is_indexed = True
 
-    def ann(self, np.float32_t[:] q, int k):
+    def ann(self, np.float32_t[:] q, int k, bool return_distances=False):
         """
-        Single query nearest neighbor search.
+        Single query approximate nearest neighbor search.
 
         Parameters
         ----------
-        q : ndarray, shape (n_features,)
+        q : ndarray, shape (n_features,), dtype=float32
             The query vector.
         k : int
             Number of nearest neighbors to return.
+        return_distances : bool, default=False
+            If True, also return the squared L2 distances to each neighbor.
+            If False, only indices are returned (default behavior).
 
         Returns
         -------
-        indices : ndarray, shape (k,)
-            Indices of the exact nearest neighbors found within the candidate pool.
+        indices : ndarray, shape (k,), dtype=int32
+            Indices of the approximate nearest neighbors found within the candidate pool,
+            sorted by ascending distance.
+        distances_sq : ndarray, shape (k,), dtype=float32
+            Squared L2 distances to each neighbor, sorted ascending.
+            Only returned when return_distances=True.
+            To obtain true L2 distances: np.sqrt(np.maximum(distances_sq, 0))
+
+        Notes
+        -----
+        Padding: if fewer than k candidates are found in the leaf nodes,
+        remaining index slots are filled with -1 and distance slots with
+        np.finfo(np.float32).max.
+
+        Examples
+        --------
+        >>> indices = index.ann(query, k=5)
+        >>> indices, distances_sq = index.ann(query, k=5, return_distances=True)
+        >>> distances_l2 = np.sqrt(np.maximum(distances_sq, 0))
         """
         if not self._is_indexed:
-             raise RuntimeError("Index is empty. Call index() first.")
+            raise RuntimeError("Index is empty. Call index() first.")
 
         cdef Py_ssize_t n = q.shape[0]
         cdef const float* data_ptr = &q[0]
+        cdef ANNResult result = self.c_drpf.ann(data_ptr, n, k)
+        cdef Py_ssize_t size = result.indices.size()
 
-        cdef vector[int] result = self.c_drpf.ann(data_ptr, n, k)
-        cdef Py_ssize_t size = result.size()
-        cdef np.ndarray[np.int32_t, ndim=1] np_array = np.empty(size, dtype=np.int32)
+        cdef np.ndarray[np.int32_t, ndim=1] np_indices
+        cdef np.ndarray[np.float32_t, ndim=1] np_distances
 
+        if return_distances:
+            np_distances = np.empty(size, dtype=np.float32)
+            if size > 0:
+                memcpy(<void*> np_distances.data, <void*> result.distances_sq.data(),
+                       size * sizeof(float))
+            np_indices = np.empty(size, dtype=np.int32)
+            if size > 0:
+                memcpy(<void*> np_indices.data, <void*> result.indices.data(),
+                       size * sizeof(int))
+            return np_indices, np_distances
+
+        np_indices = np.empty(size, dtype=np.int32)
         if size > 0:
-            memcpy(<void*> np_array.data, <void*> &result[0], size * sizeof(int))
-
-        return np_array
+            memcpy(<void*> np_indices.data, <void*> result.indices.data(),
+                   size * sizeof(int))
+        return np_indices
         
-    def ann_batch(self, np.ndarray[np.float32_t, ndim=2] queries, int k):
+    def ann_batch(self, np.ndarray[np.float32_t, ndim=2] queries, int k, bool return_distances=False):
         """
-        Parallel batch nearest neighbor search.
+        Parallel batch approximate nearest neighbor search.
 
-        This method projects all queries into the forest space, gathers unique 
-        candidates from intersected leaf nodes across all trees, and computes 
-        exact Euclidean distances for all gathered candidates to return the top-k.
+        Projects all queries into the forest space, gathers unique candidates
+        from intersected leaf nodes across all trees, and computes exact squared
+        Euclidean distances for all gathered candidates to return the top-k per query.
 
         Parameters
         ----------
         queries : ndarray, shape (n_queries, n_features), dtype=float32
-            The query vectors.
+            The query vectors. Must be a C-contiguous float32 array.
         k : int
             Number of nearest neighbors to return per query.
+        return_distances : bool, default=False
+            If True, also return the squared L2 distances to each neighbor.
+            If False, only indices are returned (default behavior).
 
         Returns
         -------
-        indices : ndarray, shape (n_queries, k)
-            Indices of the exact nearest neighbors found within the candidate pool.
+        indices : ndarray, shape (n_queries, k), dtype=int32
+            Indices of the approximate nearest neighbors for each query,
+            sorted by ascending distance per row.
+        distances_sq : ndarray, shape (n_queries, k), dtype=float32
+            Squared L2 distances to each neighbor per query, sorted ascending per row.
+            Only returned when return_distances=True.
+            To obtain true L2 distances: np.sqrt(np.maximum(distances_sq, 0))
+
+        Notes
+        -----
+        Padding: if fewer than k candidates are found for a given query,
+        remaining index slots are filled with -1 and distance slots with
+        np.finfo(np.float32).max.
+
+        Examples
+        --------
+        >>> indices = index.ann_batch(queries, k=5)
+        >>> indices, distances_sq = index.ann_batch(queries, k=5, return_distances=True)
+        >>> distances_l2 = np.sqrt(np.maximum(distances_sq, 0))
         """
         if not self._is_indexed:
-             raise RuntimeError("Index is empty. Call index() first.")
-             
+            raise RuntimeError("Index is empty. Call index() first.")
+
         cdef np.ndarray[np.float32_t, ndim=2, mode="c"] queries_c = \
             np.ascontiguousarray(queries, dtype=np.float32)
         cdef const float* q_ptr = <const float*> queries_c.data
         cdef int n_queries = queries_c.shape[0]
         cdef int dim = queries_c.shape[1]
-    
-        cdef vector[int] cpp_results
 
+        cdef ANNResult cpp_result
         with nogil:
-            cpp_results = self.c_drpf.ann_batch(q_ptr, n_queries, dim, k)
-    
-        cdef np.ndarray[np.int32_t, ndim=2] np_results = np.empty((n_queries, k), dtype=np.int32)
-        if not cpp_results.empty():
-            memcpy(<void*> np_results.data, <void*> cpp_results.data(),
+            cpp_result = self.c_drpf.ann_batch(q_ptr, n_queries, dim, k)
+
+        cdef np.ndarray[np.int32_t, ndim=2]   np_indices   = np.empty((n_queries, k), dtype=np.int32)
+        cdef np.ndarray[np.float32_t, ndim=2] np_distances
+
+        if not cpp_result.indices.empty():
+            memcpy(<void*> np_indices.data, <void*> cpp_result.indices.data(),
                    n_queries * k * sizeof(int))
-        return np_results
+
+        if return_distances:
+            np_distances = np.empty((n_queries, k), dtype=np.float32)
+            if not cpp_result.distances_sq.empty():
+                memcpy(<void*> np_distances.data, <void*> cpp_result.distances_sq.data(),
+                       n_queries * k * sizeof(float))
+            return np_indices, np_distances
+
+        return np_indices
 
     def get_leaf_sizes(self, int index=-1):
         """
