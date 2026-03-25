@@ -94,10 +94,20 @@ protected:
 
         if (static_cast<uint32_t>(mid) == node_start || static_cast<uint32_t>(mid) == node_end)
         {
-            this->nodePool[node_idx].to_split = false;
-            this->nodePool[node_idx].left = -1;
-            this->nodePool[node_idx].right = -1;
-            return;
+            size_t m = node_start + (size / 2);
+
+            std::nth_element(
+                this->indices.begin() + node_start,
+                this->indices.begin() + m,
+                this->indices.begin() + node_end,
+                [&](uint32_t a, uint32_t b)
+                {
+                    return static_cast<float>(col_ptr[a]) < static_cast<float>(col_ptr[b]);
+                });
+
+            mid = static_cast<int>(m);
+            split_value = static_cast<float>(col_ptr[this->indices[mid]]);
+            this->nodePool[node_idx].splitValue = split_value;
         }
 
         int leftKey = ++(this->keyCounter);
@@ -177,8 +187,8 @@ private:
     {
         std::vector<int> candidates;
         std::vector<float> scores;
-        std::vector<uint16_t> seen;
-        uint16_t generation = 0;
+        std::vector<uint32_t> seen;
+        uint32_t generation = 0;
         std::vector<int> indices_buffer;
 
         void resize(int rows, int max_candidates)
@@ -430,6 +440,8 @@ public:
                 }
             }
         }
+
+        std::sort(ctx.candidates.begin(), ctx.candidates.end());
 
         size_t n_cands = ctx.candidates.size();
         if (n_cands == 0)
