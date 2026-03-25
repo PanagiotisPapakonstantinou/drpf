@@ -441,8 +441,6 @@ public:
             }
         }
 
-        std::sort(ctx.candidates.begin(), ctx.candidates.end());
-
         size_t n_cands = ctx.candidates.size();
         if (n_cands == 0)
         {
