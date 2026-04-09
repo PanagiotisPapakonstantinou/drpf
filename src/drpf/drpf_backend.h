@@ -258,11 +258,11 @@ public:
     }
 };
 
-
 #ifdef USE_CUDA
 #include "drpf_cuda.cuh"
 
-class DRPFBackendGPU : public DrpfBackend {
+class DRPFBackendGPU : public DrpfBackend
+{
 private:
     GPUDataHandle _h;
     std::unique_ptr<DRPFBackendCPU> _cpu_fallback;
@@ -270,17 +270,18 @@ private:
 
     using TreeType = KdeBinarySplitTree<Eigen::half>;
 
-    int flatten(const TreeType* tree,
+    int flatten(const TreeType *tree,
                 int root_cpu_idx,
                 int tree_offset,
                 int proj_cols_per_tree,
-                std::vector<GPUNode>& flat_nodes,
-                std::vector<unsigned int>& flat_leaf_data)
+                std::vector<GPUNode> &flat_nodes,
+                std::vector<unsigned int> &flat_leaf_data)
     {
-        if (root_cpu_idx == -1) return -1;
-        
-        const auto& pool = tree->getNodePool();
-        const auto& global_indices = tree->getIndices();
+        if (root_cpu_idx == -1)
+            return -1;
+
+        const auto &pool = tree->getNodePool();
+        const auto &global_indices = tree->getIndices();
 
         int root_flat_idx = static_cast<int>(flat_nodes.size());
         flat_nodes.emplace_back();
@@ -288,61 +289,71 @@ private:
         std::queue<std::pair<int, int>> q;
         q.push({root_cpu_idx, root_flat_idx});
 
-        while (!q.empty()) {
+        while (!q.empty())
+        {
             auto [curr_cpu_idx, curr_flat_idx] = q.front();
             q.pop();
 
-            const auto& cpu_node = pool[curr_cpu_idx];
+            const auto &cpu_node = pool[curr_cpu_idx];
             GPUNode gpu_node;
 
-            if (cpu_node.is_leaf) {
-                gpu_node.left_child  = -1;
-                gpu_node.right_child = -1; 
-                
+            if (cpu_node.is_leaf)
+            {
+                gpu_node.left_child = -1;
+                gpu_node.right_child = -1;
+
                 gpu_node.leaf_start_idx = static_cast<int>(flat_leaf_data.size());
-                gpu_node.leaf_size      = static_cast<int>(cpu_node.getSize());
-                
-                for (uint32_t i = cpu_node.start; i < cpu_node.end; ++i) {
+                gpu_node.leaf_size = static_cast<int>(cpu_node.getSize());
+
+                for (uint32_t i = cpu_node.start; i < cpu_node.end; ++i)
+                {
                     flat_leaf_data.push_back(global_indices[i]);
                 }
-            } else {
+            }
+            else
+            {
                 int local_col = cpu_node.depth % proj_cols_per_tree;
-                
+
                 gpu_node.split_dim = tree_offset + local_col;
                 gpu_node.split_val = cpu_node.splitValue;
-                
-                if (cpu_node.left != -1) {
+
+                if (cpu_node.left != -1)
+                {
                     int left_flat_idx = static_cast<int>(flat_nodes.size());
                     flat_nodes.emplace_back();
                     gpu_node.left_child = left_flat_idx;
                     q.push({cpu_node.left, left_flat_idx});
-                } else {
+                }
+                else
+                {
                     gpu_node.left_child = -1;
                 }
 
-                if (cpu_node.right != -1) {
+                if (cpu_node.right != -1)
+                {
                     int right_flat_idx = static_cast<int>(flat_nodes.size());
                     flat_nodes.emplace_back();
                     gpu_node.right_child = right_flat_idx;
                     q.push({cpu_node.right, right_flat_idx});
-                } else {
+                }
+                else
+                {
                     gpu_node.right_child = -1;
                 }
             }
 
             flat_nodes[curr_flat_idx] = gpu_node;
         }
-        
+
         return root_flat_idx;
     }
 
-
 public:
     DRPFBackendGPU(
-        const float* data, long rows, long cols,
-        const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>* proj_matrix,
-        const Eigen::VectorXf* norms,
-        const std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>>& cpu_forest,
+        const float *data, long rows, long cols,
+        const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> *proj_matrix,
+        const Eigen::VectorXf *norms,
+        const std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> &cpu_forest,
         int max_buffer)
         : _dim(cols)
     {
@@ -351,7 +362,8 @@ public:
         std::vector<int> tree_roots;
 
         int proj_cols_per_tree = (int)proj_matrix->cols() / (int)cpu_forest.size();
-        for (const auto& tree : cpu_forest) {
+        for (const auto &tree : cpu_forest)
+        {
             int tree_offset = tree->getOffset();
             int root_idx = flatten(tree.get(), tree->getRootIndex(),
                                    tree_offset, proj_cols_per_tree,
@@ -360,12 +372,12 @@ public:
         }
 
         FlattenedForest ff;
-        ff.nodes         = flat_nodes.data();
-        ff.leaf_data     = flat_leaf_data.data();
-        ff.tree_roots    = tree_roots.data();
-        ff.num_nodes     = (int)flat_nodes.size();
+        ff.nodes = flat_nodes.data();
+        ff.leaf_data = flat_leaf_data.data();
+        ff.tree_roots = tree_roots.data();
+        ff.num_nodes = (int)flat_nodes.size();
         ff.num_leaf_data = (int)flat_leaf_data.size();
-        ff.num_trees     = (int)tree_roots.size();
+        ff.num_trees = (int)tree_roots.size();
 
         _h = setup_gpu_backend(
             data, rows, cols,
@@ -379,17 +391,21 @@ public:
             (int)cpu_forest.size(), max_buffer);
     }
 
-    ~DRPFBackendGPU() {
+    ~DRPFBackendGPU()
+    {
         free_gpu_handle(_h);
     }
 
-    ANNResult ann(const float* query, int dim, int k) override {
+    ANNResult ann(const float *query, int dim, int k) override
+    {
         return _cpu_fallback->ann(query, dim, k);
     }
 
-    ANNResult ann_batch(const float* queries, int n_queries, int dim, int k) override {
+    ANNResult ann_batch(const float *queries, int n_queries, int dim, int k) override
+    {
         constexpr int GPU_CROSSOVER = 64;
-        if (n_queries < GPU_CROSSOVER) {
+        if (n_queries < GPU_CROSSOVER)
+        {
             return _cpu_fallback->ann_batch(queries, n_queries, dim, k);
         }
 
