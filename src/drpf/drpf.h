@@ -304,8 +304,33 @@ public:
         generateRandomMatrix(projectionMatrix, seed);
 
         rndm_projections.resize(data.rows(), (internal_depth + 1) * numTrees);
-        rndm_projections.noalias() = (data * projectionMatrix).cast<Eigen::half>();
-        norms = data.rowwise().squaredNorm();
+        norms.resize(data.rows());
+        
+                if (device_kind == Device::GPU)
+        {
+#ifdef USE_CUDA
+            
+            extern void compute_gpu_projections_and_norms(
+                const float*, const float*, void*, float*, int, int, int);
+
+            compute_gpu_projections_and_norms(
+                data.data(),
+                projectionMatrix.data(),
+                rndm_projections.data(),
+                norms.data(),
+                static_cast<int>(data.rows()),
+                static_cast<int>(data.cols()),
+                static_cast<int>(projectionMatrix.cols())
+            );
+#else
+            throw std::runtime_error("GPU backend requested but built without USE_CUDA");
+#endif
+        }
+        else
+        {
+            rndm_projections.noalias() = (data * projectionMatrix).cast<Eigen::half>();
+            norms = data.rowwise().squaredNorm();
+        }
 
         forest = buildForest(rndm_projections, numTrees, internal_depth,
                              split_depth, search_space, approximate_search_space_size);
