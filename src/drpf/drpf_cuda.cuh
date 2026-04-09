@@ -62,7 +62,7 @@ struct GPUDataHandle {
     int max_buf   = 0;   // candidates per query
 };
 
-// 1. Initialize VRAM and persistent scratch.
+// Initialize VRAM and persistent scratch.
 //    max_search_buffer_size and max_batch determine scratch sizing.
 GPUDataHandle setup_gpu_backend(
     const float* data, long rows, long cols,
@@ -74,7 +74,7 @@ GPUDataHandle setup_gpu_backend(
     int max_k     = 128
 );
 
-// 2. Run search. Reuses persistent scratch in handle.
+// Run search. Reuses persistent scratch in handle.
 //    If n_queries > handle.max_batch, processes in chunks.
 void search_gpu_batch(
     GPUDataHandle& handle,
@@ -82,5 +82,17 @@ void search_gpu_batch(
     int* out_indices, float* out_distances
 );
 
-// 3. Free everything.
+// Computes the random projections via cuBLAS and the squared L2 norms via custom kernel
+void compute_gpu_projections_and_norms(
+    const float* h_data, 
+    const float* h_proj, 
+    void* h_out_half, 
+    float* h_norms,
+    int rows, 
+    int cols, 
+    int proj_cols
+);
+
+
+// Free everything.
 void free_gpu_handle(GPUDataHandle& handle);
