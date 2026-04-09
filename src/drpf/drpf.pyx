@@ -355,20 +355,32 @@ cdef class DRPF:
         return np_results
 
     def plot_query_leaves(self, np.ndarray[np.float32_t, ndim=1] query,
-                      str method='pca', int bg_samples=2500,
-                      base_color='tab:blue', grey=(0.8, 0.8, 0.8),
-                      clip_percentiles=(5, 95), float power=1.0):
+                          str method='pca', int bg_samples=2500,
+                          base_color='tab:blue', grey=(0.8, 0.8, 0.8),
+                          clip_percentiles=(5, 95), float power=1.0):
         """
         Projects the dataset into 2D and visualizes the query alongside the exact
         leaf candidate points found in the forest. Candidate points are shaded
-        from `base_color` (near = intense) toward `grey` (far = greyed out).
-
-        New params:
-        - base_color: matplotlib color name or RGB tuple for the base hue
-        - grey: RGB tuple to blend toward for far points
-        - clip_percentiles: (low_pct, high_pct) used for robust distance scaling
-        - power: exponent applied to normalized distances to adjust contrast
-                 (power < 1 -> more points appear intense; power > 1 -> sharper falloff)
+        from ``base_color`` (near = intense) toward ``grey`` (far = greyed out).
+    
+        Parameters
+        ----------
+        query : ndarray, shape (n_features,), dtype=float32
+            The query vector to visualize.
+        method : {'pca', 'tsne', 'umap'}, default='pca'
+            Dimensionality reduction method for the 2D projection.
+        bg_samples : int, default=2500
+            Number of background points to sample from the dataset.
+        base_color : str or tuple, default='tab:blue'
+            Matplotlib color name or RGB tuple for the base hue of near points.
+        grey : tuple, default=(0.8, 0.8, 0.8)
+            RGB tuple to blend toward for far points.
+        clip_percentiles : tuple, default=(5, 95)
+            ``(low_pct, high_pct)`` used for robust distance scaling.
+        power : float, default=1.0
+            Exponent applied to normalized distances to adjust contrast.
+            ``power < 1`` makes more points appear intense; ``power > 1``
+            produces a sharper falloff.
         """
         import matplotlib.pyplot as plt
         import matplotlib.colors as mcolors
