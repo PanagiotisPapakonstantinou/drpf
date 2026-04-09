@@ -68,7 +68,7 @@ jobs:
           pip install cython numpy pytest pytest-cov
 
       # -----------------------------------------------------------------------
-      # 6. Build
+      # 6. Build (CPU only)
       # -----------------------------------------------------------------------
       - name: Build and install package
         env:
@@ -91,9 +91,13 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
 
+  # ===========================================================================
+  # CUDA build job — verifies the GPU backend compiles.
+  # No GPU on GitHub-hosted runners, so only CPU-path tests are executed.
+  # ===========================================================================
   build-cuda:
     name: Build CUDA (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -109,8 +113,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Remove preinstalled CUDA repo
+        run: sudo rm -f /etc/apt/sources.list.d/cuda-ubuntu*.list
+
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.21
         with:
           cuda: '12.4.0'
           method: 'network'
@@ -139,9 +146,7 @@ jobs:
 
       - name: Import smoke test
         run: |
-          python -c "import drpf; print('drpf imported OK'); \
-                     idx = drpf.DRPF(num_trees=2, depth=2, device='gpu'); \
-                     print('GPU constructor OK (no GPU on runner, so .index() not called)')"
+          python -c "import drpf; print('drpf imported OK')"
 
       - name: Run CPU-path tests on CUDA build
         run: pytest tests/ -v --tb=short -k "not gpu"
