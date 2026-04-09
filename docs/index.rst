@@ -45,28 +45,42 @@ The most efficient way to use ``drpf`` is by processing queries in batches. Belo
 
    import numpy as np
    import drpf
-
+   
    # 1. Prepare your data (100k vectors, 128 dimensions)
    # Note: Data must be C-contiguous float32 for optimal performance
    data = np.random.random((100000, 128)).astype(np.float32)
-
+   
    # 2. Initialize the index
+   # All parameters are optional and have sensible defaults:
+   # - num_trees: Larger forest = higher accuracy (default: 5)
+   # - depth: Greater depth = smaller leaves (default: 3)
+   # - bw_modifier: KDE smoothing. < 1.0 is highly sensitive; > 1.0 over-smooths. (default: 0.1)
+   # - min_ratio: Valley search constraint. Restricts split search to the middle mass. (default: 0.33333)
+   # - seed: Guarantees reproducible projection matrices. (default: 0)
+   # - num_threads: 0 auto-detects and uses all available CPU cores. (default: 0)
+   
+   # Example overriding the defaults for a larger, custom-tuned forest:
    index = drpf.DRPF(
-       num_trees=50, 
-       depth=8, 
-       bw_modifier=0.5, 
+       num_trees=50,
+       depth=8,
+       bw_modifier=0.5,
        min_ratio=0.33,
        seed=42,
-       num_threads=0
-   ) 
-
+       num_threads=0,
+       device="cpu",
+   )
+   
    # 3. Build the index
    index.index(data)
-
+   
+   # (Optional) Check the leaf statistics to verify your tuning parameters
+   index.print_leaf_stats("My Data Index")
+   
    # 4. Batch Search
+   # Pass multiple queries at once to utilize parallel C++ execution
    queries = np.random.random((100, 128)).astype(np.float32)
    indices = index.ann_batch(queries, k=10)
-
+   
    print(f"Nearest neighbors for first query: {indices[0]}")
 
 
@@ -77,7 +91,10 @@ Contents
    :maxdepth: 2
    :caption: Contents:
 
-   self
+   installation
+   usage
+   gpu_backend
+   api
 
 Module Reference
 ----------------

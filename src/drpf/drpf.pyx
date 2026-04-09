@@ -10,20 +10,24 @@ from libcpp cimport bool
 import numpy as np
 cimport numpy as np
 
-# C++ class declaration
 cdef extern from "drpf.h":
     cdef cppclass ANNResult "DRPF::ANNResult":
         vector[int]   indices
         vector[float] distances_sq
 
+    cdef enum Device "DRPF::Device":
+        CPU "DRPF::Device::CPU"
+        GPU "DRPF::Device::GPU"
+
     cdef cppclass CDRPF "DRPF":
-        CDRPF(int num_trees, int split_depth, int no_of_ss, bool approximate_search_space_size, float bw_modifier, int seed, float min_ratio, int num_threads)
+        CDRPF(int num_trees, int split_depth, int no_of_ss,
+              bool approximate_search_space_size, float bw_modifier,
+              int seed, float min_ratio, int num_threads, Device device_kind)
         void index(const float* data_ptr, size_t length, int dimensions) except + nogil
         ANNResult ann(const float* data, size_t length, int k) except + nogil
         ANNResult ann_batch(const float* queries, int n_queries, int dim, int k) except + nogil
         vector[int] getLeafNodeSizes(int index) except +
         vector[pair[int, int]] getForestIndices(const float* query_ptr, size_t length, int index) except +
-
 
 cdef class DRPF:
     """
@@ -51,7 +55,8 @@ cdef class DRPF:
                   float bw_modifier=0.1,
                   int seed=0,
                   float min_ratio=0.33333,
-                  int num_threads=0): 
+                  int num_threads=0,
+                  str device="cpu"): 
         """
         Initialize the DRPF index structure.
 
@@ -86,9 +91,18 @@ cdef class DRPF:
         num_threads : int, default=0
             Number of OpenMP threads for parallel operations. 0 uses all available cores.
         """
+
+        cdef Device bk
+        if device == "cpu":
+            bk = CPU
+        elif device == "gpu":
+            bk = GPU
+        else:
+            raise ValueError(f"device must be 'cpu' or 'gpu', got {device!r}")
+
         self.c_drpf = new CDRPF(num_trees, depth, no_of_ss, 
                                   approximate_search_space_size, 
-                                  bw_modifier, seed, min_ratio, num_threads)
+                                  bw_modifier, seed, min_ratio, num_threads, bk)
         self._is_indexed = False
 
     def __dealloc__(self):
@@ -97,12 +111,14 @@ cdef class DRPF:
 
     def index(self, np.ndarray[np.float32_t, ndim=2] data):
         """
-        Builds the Random Projection Forest index from the provided dataset.
+        Build the index.
 
         Parameters
         ----------
-        data : np.ndarray (n_samples, n_features), dtype=float32
-            The dataset to index. Must be a C-contiguous float32 array.
+        data : (n_samples, n_features) float32 ndarray
+        device : {"cpu", "gpu"}, default="cpu"
+            Which device to use for searches. "gpu" requires the package
+            to have been built with CUDA support.
         """
         cdef np.ndarray[np.float32_t, ndim=2, mode="c"] data_float32 = \
             np.ascontiguousarray(data, dtype=np.float32)

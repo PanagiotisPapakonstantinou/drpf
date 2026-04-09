@@ -24,11 +24,52 @@ pip install .
 
 
 ### Requirements
-* Python 3.7+
+* Python 3.8+
 * NumPy
 * Cython
 * C++20 compatible compiler with OpenMP
-* Eigen 3.4.0+ (Usually handled automatically by the setup script)
+* Eigen 3.4.0+ (handled automatically)
+* **Optional:** CUDA Toolkit 11.8+ for GPU backend
+
+### Optional: GPU Support
+
+DRPF includes an optional CUDA backend for accelerated batch queries on large
+workloads. To build with GPU support:
+
+1. Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (11.8+ or 12.x).
+2. Ensure `nvcc` is on your `PATH`, or set `CUDA_HOME` / `CUDA_PATH`.
+3. Build normally — `setup.py` auto-detects CUDA and compiles `drpf_cuda.cu`:
+
+```bash
+   pip install .
+```
+
+To force a CPU-only build even with CUDA installed:
+
+```bash
+DRPF_DISABLE_CUDA=1 pip install .
+```
+
+To target a specific GPU architecture (default is `sm_75`):
+
+```bash
+DRPF_CUDA_ARCH=sm_86 pip install .
+```
+
+#### Using the GPU backend
+
+```python
+index = drpf.DRPF(num_trees=50, depth=8, device="gpu")
+index.index(data)
+
+# Large batches automatically run on GPU; small batches (< 64 queries)
+# transparently fall back to the CPU path.
+results = index.ann_batch(queries, k=10)
+```
+
+**When GPU helps:** large batch queries (≥ 64), large `k`, large datasets.
+**When CPU is faster:** single-query `ann()` calls, small batches, small datasets.
+Single-query `ann()` always runs on CPU regardless of `device`.
 
 ## Usage
 
@@ -54,13 +95,14 @@ data = np.random.random((100000, 128)).astype(np.float32)
 
 # Example overriding the defaults for a larger, custom-tuned forest:
 index = drpf.DRPF(
-    num_trees=50, 
-    depth=8, 
-    bw_modifier=0.5, 
+    num_trees=50,
+    depth=8,
+    bw_modifier=0.5,
     min_ratio=0.33,
     seed=42,
-    num_threads=0
-) 
+    num_threads=0,
+    device="cpu",
+)
 
 # 3. Build the index
 index.index(data)

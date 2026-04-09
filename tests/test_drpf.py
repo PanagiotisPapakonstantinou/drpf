@@ -11,6 +11,40 @@ import numpy as np
 drpf_mod = pytest.importorskip("drpf", reason="drpf extension not compiled")
 DRPF = drpf_mod.DRPF
 
+
+# ---------------------------------------------------------------------------
+# GPU availability (lazy, cached)
+# ---------------------------------------------------------------------------
+_GPU_AVAILABLE = None
+
+
+def gpu_available():
+    """Check whether the drpf build supports GPU and a device is present.
+
+    Lazy and cached so it only runs once, and only when a test actually
+    needs to know. Catches BaseException to be robust against driver-level
+    failures that don't subclass Exception.
+    """
+    global _GPU_AVAILABLE
+    if _GPU_AVAILABLE is not None:
+        return _GPU_AVAILABLE
+    try:
+        idx = DRPF(num_trees=2, depth=2, seed=0, device="gpu")
+        idx.index(
+            np.random.default_rng(0).standard_normal((50, 8)).astype(np.float32)
+        )
+        # Trigger a batch large enough to exercise the GPU path (>= 64)
+        q = np.random.default_rng(1).standard_normal((64, 8)).astype(np.float32)
+        idx.ann_batch(q, k=3)
+        _GPU_AVAILABLE = True
+    except BaseException:
+        _GPU_AVAILABLE = False
+    return _GPU_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 @pytest.fixture
 def small_data():
     """200 points in 16 dimensions, float32."""
@@ -20,11 +54,30 @@ def small_data():
 
 @pytest.fixture
 def indexed_drpf(small_data):
-    """A DRPF instance that has already been indexed."""
+    """A DRPF instance that has already been indexed (CPU)."""
     idx = DRPF(num_trees=3, depth=3, seed=42)
     idx.index(small_data)
     return idx, small_data
 
+
+@pytest.fixture(params=["cpu", pytest.param("gpu", marks=pytest.mark.gpu)])
+def device(request):
+    if request.param == "gpu" and not gpu_available():
+        pytest.skip("GPU backend not available (no CUDA build or no device)")
+    return request.param
+
+
+@pytest.fixture
+def indexed_drpf_device(small_data, device):
+    """A DRPF instance indexed on the parametrized device."""
+    idx = DRPF(num_trees=3, depth=3, seed=42, device=device)
+    idx.index(small_data)
+    return idx, small_data, device
+
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
 class TestInit:
     def test_default_construction(self):
         idx = DRPF()
@@ -34,17 +87,21 @@ class TestInit:
         idx = DRPF(num_trees=10, depth=5, bw_modifier=0.5, seed=7, min_ratio=0.25)
         assert idx is not None
 
+
+# ---------------------------------------------------------------------------
+# Indexing & guard rails
+# ---------------------------------------------------------------------------
 class TestIndex:
     def test_index_accepts_float32(self, small_data):
         assert small_data.dtype == np.float32
         idx = DRPF(seed=0)
-        idx.index(small_data) 
+        idx.index(small_data)
 
     def test_index_converts_float64(self):
         """index() should accept float64 input cast to float32."""
         data = np.random.default_rng(0).standard_normal((100, 8))
         idx = DRPF(seed=0)
-        idx.index(data.astype(np.float32)) 
+        idx.index(data.astype(np.float32))
 
     def test_raises_before_index_ann(self):
         idx = DRPF()
@@ -69,6 +126,10 @@ class TestIndex:
         with pytest.raises(RuntimeError, match="index"):
             idx.get_forest_indices(q)
 
+
+# ---------------------------------------------------------------------------
+# Single-query ANN
+# ---------------------------------------------------------------------------
 class TestANN:
     def test_returns_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
@@ -122,6 +183,10 @@ class TestANN:
         assert len(valid) <= len(data)
         assert np.all(valid < len(data))
 
+
+# ---------------------------------------------------------------------------
+# Batch ANN
+# ---------------------------------------------------------------------------
 class TestAnnBatch:
     def test_returns_2d_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
@@ -136,7 +201,6 @@ class TestAnnBatch:
         assert result.shape == (n_queries, k)
 
     def test_dtype_int32(self, indexed_drpf):
-        """Verify output dtype is int32."""
         idx, data = indexed_drpf
         result = idx.ann_batch(data[:10], k=5)
         assert result.dtype == np.int32
@@ -180,6 +244,10 @@ class TestAnnBatch:
         assert isinstance(result, np.ndarray)
         assert result.shape[0] == 5
 
+
+# ---------------------------------------------------------------------------
+# Leaf sizes
+# ---------------------------------------------------------------------------
 class TestLeafSizes:
     def test_returns_ndarray(self, indexed_drpf):
         idx, _ = indexed_drpf
@@ -213,13 +281,13 @@ class TestLeafSizes:
         """Different bandwidth settings should produce different leaf structures."""
         idx_spiky = DRPF(num_trees=3, depth=3, seed=0, bw_modifier=0.01)
         idx_spiky.index(small_data)
-    
+
         idx_smooth = DRPF(num_trees=3, depth=3, seed=0, bw_modifier=2.0)
         idx_smooth.index(small_data)
-    
+
         sizes_spiky = idx_spiky.get_leaf_sizes()
         sizes_smooth = idx_smooth.get_leaf_sizes()
-    
+
         assert sizes_spiky.std() != sizes_smooth.std() or \
                len(sizes_spiky) != len(sizes_smooth), \
                "Expected different bw_modifier values to produce different leaf structures"
@@ -234,6 +302,10 @@ class TestLeafSizes:
 
         assert len(idx6.get_leaf_sizes()) > len(idx3.get_leaf_sizes())
 
+
+# ---------------------------------------------------------------------------
+# Forest indices
+# ---------------------------------------------------------------------------
 class TestForestIndices:
     def test_returns_2d_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
@@ -273,6 +345,9 @@ class TestForestIndices:
         assert np.all(tree_indices < 3)
 
 
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
 class TestEdgeCases:
     def test_single_point_dataset(self):
         """A dataset with one point should not crash."""
@@ -307,6 +382,10 @@ class TestEdgeCases:
         result = idx.ann(data[0], k=10)
         assert len(result) == 10
 
+
+# ---------------------------------------------------------------------------
+# Stats printing
+# ---------------------------------------------------------------------------
 class TestPrintLeafStats:
     def test_smoke(self, indexed_drpf, capsys):
         idx, _ = indexed_drpf
@@ -326,3 +405,65 @@ class TestPrintLeafStats:
         idx = DRPF()
         with pytest.raises(RuntimeError):
             idx.print_leaf_stats()
+
+
+# ---------------------------------------------------------------------------
+# GPU backend
+# ---------------------------------------------------------------------------
+class TestGPUBackend:
+    def test_gpu_constructor_accepts_device_kwarg(self):
+        """Either constructs successfully (CUDA build) or raises a clear RuntimeError."""
+        try:
+            idx = DRPF(device="gpu")
+            assert idx is not None
+        except RuntimeError as e:
+            assert "CUDA" in str(e) or "GPU" in str(e), \
+                f"Expected CUDA/GPU in error message, got: {e}"
+
+    def test_invalid_device_raises(self):
+        with pytest.raises(ValueError, match="device"):
+            DRPF(device="tpu")
+
+    @pytest.mark.gpu
+    def test_gpu_batch_matches_cpu(self, small_data):
+        if not gpu_available():
+            pytest.skip("GPU not available")
+        cpu = DRPF(num_trees=3, depth=3, seed=42, device="cpu")
+        gpu = DRPF(num_trees=3, depth=3, seed=42, device="gpu")
+        cpu.index(small_data)
+        gpu.index(small_data)
+
+        # 64+ queries to cross the GPU_CROSSOVER threshold
+        queries = small_data[:80]
+        cpu_res = cpu.ann_batch(queries, k=10)
+        gpu_res = gpu.ann_batch(queries, k=10)
+
+        for i in range(len(queries)):
+            overlap = len(set(cpu_res[i]) & set(gpu_res[i]))
+            assert overlap >= 8, \
+                f"GPU/CPU disagree too much on query {i}: {overlap}/10"
+
+    @pytest.mark.gpu
+    def test_gpu_small_batch_falls_back_to_cpu(self, small_data):
+        if not gpu_available():
+            pytest.skip("GPU not available")
+        idx = DRPF(num_trees=3, depth=3, seed=42, device="gpu")
+        idx.index(small_data)
+
+        # < 64 queries should hit CPU fallback path inside DRPFBackendGPU
+        result = idx.ann_batch(small_data[:10], k=5)
+        assert result.shape == (10, 5)
+        assert np.all(result >= 0)
+
+    @pytest.mark.gpu
+    def test_gpu_recall_finds_self_batch(self, small_data):
+        """GPU batch results should find query points themselves with high recall."""
+        if not gpu_available():
+            pytest.skip("GPU not available")
+        idx = DRPF(num_trees=3, depth=3, seed=42, device="gpu")
+        idx.index(small_data)
+        # Need >= 64 queries to actually exercise the GPU path
+        queries = small_data[:80]
+        results = idx.ann_batch(queries, k=10)
+        hits = sum(1 for i in range(len(queries)) if i in results[i])
+        assert hits >= 60, f"GPU batch recall too low: {hits}/80"

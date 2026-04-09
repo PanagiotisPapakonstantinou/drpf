@@ -86,6 +86,110 @@ def ensure_eigen():
 eigen_include = ensure_eigen()
 print(f"Using Eigen from: {eigen_include}")
 
+
+
+# ===============================================================
+# 3. CUDA detection and pre-build
+# ===============================================================
+def find_cuda():
+    """Return (cuda_home, nvcc_path) or (None, None) if not found."""
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        cuda_home = os.path.dirname(os.path.dirname(nvcc))
+        return cuda_home, nvcc
+
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home:
+        candidate = os.path.join(cuda_home, "bin", "nvcc")
+        if sys.platform == "win32":
+            candidate += ".exe"
+        if os.path.exists(candidate):
+            return cuda_home, candidate
+
+    guesses = ["/usr/local/cuda", "/opt/cuda"]
+    for guess in guesses:
+        candidate = os.path.join(guess, "bin", "nvcc")
+        if os.path.exists(candidate):
+            return guess, candidate
+
+    return None, None
+
+
+def cuda_lib_dir(cuda_home):
+    """Return the platform-appropriate CUDA library directory."""
+    if sys.platform == "win32":
+        return os.path.join(cuda_home, "lib", "x64")
+    # Linux: prefer lib64, fall back to lib
+    lib64 = os.path.join(cuda_home, "lib64")
+    if os.path.exists(lib64):
+        return lib64
+    return os.path.join(cuda_home, "lib")
+
+
+def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None):
+    """Compile a .cu source into a relocatable object file with nvcc."""
+    os.makedirs(os.path.dirname(obj) or ".", exist_ok=True)
+
+    cmd = [
+        nvcc,
+        "-std=c++20",
+        "-O3",
+        "-DNDEBUG",
+        "-DUSE_CUDA",
+        f"-arch={arch}",
+    ]
+
+    if sys.platform != "win32":
+        cmd += ["-Xcompiler", "-fPIC"]
+
+    if host_compiler:
+        cmd += ["-ccbin", host_compiler]
+
+    cmd += ["-c", src, "-o", obj]
+
+    print("nvcc:", " ".join(cmd))
+    subprocess.check_call(cmd)
+
+
+CUDA_HOME, NVCC = find_cuda()
+USE_CUDA = (
+    CUDA_HOME is not None
+    and not os.environ.get("DRPF_DISABLE_CUDA")
+    and os.path.exists("drpf_cuda.cu")
+)
+
+cuda_objects = []
+cuda_include_dirs = []
+cuda_library_dirs = []
+cuda_libraries = []
+cuda_runtime_dirs = []
+
+if USE_CUDA:
+    print(f"CUDA found at {CUDA_HOME}; building GPU backend.")
+    cuda_obj_name = "drpf_cuda.obj" if sys.platform == "win32" else "drpf_cuda.o"
+    cuda_obj = os.path.join("build", cuda_obj_name)
+    arch = os.environ.get("DRPF_CUDA_ARCH", "sm_75")
+    host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")  # optional override
+
+    build_cuda_object(NVCC, "drpf_cuda.cu", cuda_obj,
+                      arch=arch, host_compiler=host_cxx)
+
+    cuda_objects.append(cuda_obj)
+    cuda_include_dirs.append(os.path.join(CUDA_HOME, "include"))
+
+    libdir = cuda_lib_dir(CUDA_HOME)
+    cuda_library_dirs.append(libdir)
+    cuda_runtime_dirs.append(libdir)
+    cuda_libraries += ["cudart", "cublas"]
+else:
+    if os.environ.get("DRPF_DISABLE_CUDA"):
+        print("DRPF_DISABLE_CUDA set; building CPU-only.")
+    elif CUDA_HOME is None:
+        print("CUDA not found (nvcc not on PATH); building CPU-only.")
+    else:
+        print("drpf_cuda.cu not present; building CPU-only.")
+
+
 # ===============================================================
 # 3. Compiler selection (macOS specific)
 # ===============================================================
@@ -228,7 +332,11 @@ ext = Extension(
     include_dirs=[
         eigen_include,
         np.get_include(),
-    ],
+    ] + cuda_include_dirs,       
+    library_dirs=cuda_library_dirs,
+    libraries=cuda_libraries,      
+    runtime_library_dirs=cuda_runtime_dirs if sys.platform != "win32" else None,
+    extra_objects=cuda_objects,
     extra_compile_args=compile_flags,
     extra_link_args=link_flags,
 )

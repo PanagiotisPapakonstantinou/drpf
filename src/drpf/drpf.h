@@ -145,6 +145,8 @@ public:
     }
 };
 
+#include "drpf_backend.h"
+
 /**
  * @brief Dense Random Projection Forest.
  * * Combines multiple BinarySplitTrees with Product Quantization (PQ) for
@@ -152,6 +154,15 @@ public:
  */
 class DRPF
 {
+public:
+    using ANNResult = DrpfBackend::ANNResult;
+
+    enum class Device
+    {
+        CPU,
+        GPU
+    };
+
 private:
     const float *_data_ptr = nullptr;
     long _rows = 0;
@@ -177,32 +188,9 @@ private:
     float split_data_bandwidth;
     float min_ratio;
 
-    struct Candidate
-    {
-        int idx;
-        float score;
-    };
+    Device device_kind;
 
-    struct SearchContext
-    {
-        std::vector<int> candidates;
-        std::vector<float> scores;
-        std::vector<uint32_t> seen;
-        uint32_t generation = 0;
-        std::vector<int> indices_buffer;
-
-        void resize(int rows, int max_candidates)
-        {
-            if (seen.size() != rows)
-            {
-                seen.assign(rows, 0);
-                generation = 0;
-            }
-
-            if (candidates.capacity() < max_candidates)
-                candidates.reserve(max_candidates);
-        }
-    };
+    std::unique_ptr<DrpfBackend> backend;
 
     std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> buildForest(
         const Eigen::Ref<const Eigen::Matrix<Eigen::half, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> &projections,
@@ -267,10 +255,11 @@ public:
          float bw_modifier = 0.1f,
          int seed = 0,
          float min_ratio = 0.33333f,
-         int num_threads = 0)
+         int num_threads = 0,
+         Device device_kind = Device::CPU)
         : numTrees(num_trees), split_depth(split_depth), search_space(no_of_ss),
           approximate_search_space_size(approximate_search_space_size),
-          seed(seed), split_data_bandwidth(bw_modifier), min_ratio(min_ratio)
+          seed(seed), split_data_bandwidth(bw_modifier), min_ratio(min_ratio), device_kind(device_kind)
     {
         if (num_trees <= 0)
             throw std::invalid_argument("num_trees must be greater than 0.");
@@ -299,23 +288,18 @@ public:
         true_depth = 0;
     }
 
-    struct ANNResult
-    {
-        std::vector<int> indices;
-        std::vector<float> distances_sq;
-    };
-
-    void index(const float *data_ptr,
-               size_t length,
-               int dimensions)
+    void index(const float *data_ptr, size_t length, int dimensions)
     {
         this->_data_ptr = data_ptr;
         this->_rows = static_cast<long>(length) / dimensions;
         this->_cols = dimensions;
 
-        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            data(_data_ptr, _rows, _cols);
 
-        this->search_space = this->search_space == 0 ? static_cast<float>(data.rows()) / std::pow(2.0f, split_depth) : this->search_space;
+        this->search_space = this->search_space == 0
+                                 ? static_cast<float>(data.rows()) / std::pow(2.0f, split_depth)
+                                 : this->search_space;
         projectionMatrix.resize(data.cols(), (internal_depth + 1) * numTrees);
         generateRandomMatrix(projectionMatrix, seed);
 
@@ -323,8 +307,29 @@ public:
         rndm_projections.noalias() = (data * projectionMatrix).cast<Eigen::half>();
         norms = data.rowwise().squaredNorm();
 
-        forest = buildForest(rndm_projections, numTrees, internal_depth, split_depth, search_space, approximate_search_space_size);
+        forest = buildForest(rndm_projections, numTrees, internal_depth,
+                             split_depth, search_space, approximate_search_space_size);
         compact();
+
+        if (device_kind == Device::GPU)
+        {
+#ifdef USE_CUDA
+            backend = std::make_unique<DRPFBackendGPU>(
+                _data_ptr, _rows, _cols,
+                &projectionMatrix,
+                &norms,
+                forest, max_search_buffer_size);
+#else
+            throw std::runtime_error("GPU backend requested but built without USE_CUDA");
+#endif
+        }
+        else
+        {
+            backend = std::make_unique<DRPFBackendCPU>(
+                _data_ptr, _rows, _cols,
+                &projectionMatrix, &norms, &forest,
+                numTrees, max_search_buffer_size);
+        }
     }
 
     ~DRPF() = default;
@@ -403,158 +408,13 @@ public:
         return indices;
     }
 
-    FORCE_INLINE void exact_ann(
-        const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
-        const Eigen::Ref<const Eigen::RowVectorXf> q,
-        const float *__restrict proj_q,
-        int k,
-        int *results,
-        float *distances_sq,
-        SearchContext &ctx)
-    {
-        int rows = static_cast<int>(data.rows());
-        ctx.resize(rows, max_search_buffer_size);
-
-        ctx.generation++;
-        if (ctx.generation == 0)
-        {
-            std::fill(ctx.seen.begin(), ctx.seen.end(), 0);
-            ctx.generation = 1;
-        }
-
-        ctx.candidates.clear();
-
-        for (int i = 0; i < numTrees; i++)
-        {
-            auto leafSpan = forest[i]->getLeafIndices(proj_q);
-            const unsigned int *leaf_ptr = leafSpan.data();
-            size_t leaf_size = leafSpan.size();
-
-            for (size_t j = 0; j < leaf_size; ++j)
-            {
-                int idx = leaf_ptr[j];
-                if (ctx.seen[idx] != ctx.generation)
-                {
-                    ctx.seen[idx] = ctx.generation;
-                    ctx.candidates.push_back(idx);
-                }
-            }
-        }
-
-        size_t n_cands = ctx.candidates.size();
-        if (n_cands == 0)
-        {
-            std::fill(results, results + k, -1);
-            std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
-            return;
-        }
-
-        ctx.scores.resize(n_cands);
-
-        float q_norm = q.squaredNorm();
-        const float *data_raw = data.data();
-        int dim = static_cast<int>(data.cols());
-        const int prefetch_dist = 32;
-
-        for (size_t i = 0; i < n_cands; ++i)
-        {
-            if (i + prefetch_dist < n_cands)
-            {
-                int next_idx = ctx.candidates[i + prefetch_dist];
-                PREFETCH(data_raw + static_cast<size_t>(next_idx) * dim);
-            }
-
-            int idx = ctx.candidates[i];
-            float dot = data.row(idx).dot(q);
-            ctx.scores[i] = norms[idx] + q_norm - 2 * dot;
-        }
-
-        if (ctx.indices_buffer.size() < n_cands)
-            ctx.indices_buffer.resize(n_cands);
-
-        std::iota(ctx.indices_buffer.begin(), ctx.indices_buffer.begin() + n_cands, 0);
-
-        int k_eff = std::min((int)n_cands, k);
-
-        std::nth_element(ctx.indices_buffer.begin(),
-                         ctx.indices_buffer.begin() + k_eff,
-                         ctx.indices_buffer.begin() + n_cands,
-                         [&](int a, int b)
-                         { return ctx.scores[a] < ctx.scores[b]; });
-
-        std::sort(ctx.indices_buffer.begin(),
-                  ctx.indices_buffer.begin() + k_eff,
-                  [&](int a, int b)
-                  { return ctx.scores[a] < ctx.scores[b]; });
-
-        int cand;
-        for (int i = 0; i < k_eff; i++)
-        {
-            cand = ctx.indices_buffer[i];
-            results[i] = ctx.candidates[cand];
-            distances_sq[i] = ctx.scores[cand];
-        }
-
-        for (int i = k_eff; i < k; i++)
-        {
-            results[i] = -1;
-            distances_sq[i] = std::numeric_limits<float>::max();
-        }
-    }
-
     ANNResult ann_batch(const float *queries, int n_queries, int dim, int k)
     {
-        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
-        if (dim != data.cols())
-            throw std::invalid_argument("Query dimensionality mismatch");
-
-        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> Q(queries, n_queries, dim);
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> projected = Q * projectionMatrix;
-
-        const int projDim = projected.cols();
-        const float *proj_data = projected.data();
-
-        ANNResult out;
-        out.indices.resize(n_queries * k);
-        out.distances_sq.resize(n_queries * k);
-
-#pragma omp parallel
-        {
-            SearchContext ctx;
-
-#pragma omp for schedule(dynamic)
-            for (int i = 0; i < n_queries; ++i)
-            {
-                const Eigen::Map<const Eigen::RowVectorXf> q(queries + i * dim, dim);
-                const float *proj_q = proj_data + static_cast<size_t>(i) * projDim;
-                this->exact_ann(data, q, proj_q, k,
-                                &out.indices[i * k],
-                                &out.distances_sq[i * k],
-                                ctx);
-            }
-        }
-
-        return out;
+        return backend->ann_batch(queries, n_queries, dim, k);
     }
 
     ANNResult ann(const float *query_ptr, std::size_t length, int k)
     {
-        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
-        const Eigen::Map<const Eigen::RowVectorXf> query(query_ptr, 1, length);
-
-        Eigen::RowVectorXf projectedQuery(projectionMatrix.cols());
-        projectedQuery.noalias() = query * projectionMatrix;
-
-        ANNResult out;
-        out.indices.resize(k);
-        out.distances_sq.resize(k);
-
-        SearchContext ctx;
-        this->exact_ann(data, query, projectedQuery.data(), k,
-                        &out.indices[0],
-                        &out.distances_sq[0],
-                        ctx);
-
-        return out;
+        return backend->ann(query_ptr, static_cast<int>(length), k);
     }
 };

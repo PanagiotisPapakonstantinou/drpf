@@ -40,14 +40,14 @@ public:
 
     float splitValue;
     uint16_t depth;
-    bool to_split;
+    bool is_leaf;
 
     ~Node() = default;
 
     uint32_t getSize() const { return end - start; }
 
-    Node(int key, int start, int end, int depth = 0, bool split = true)
-        : start(start), end(end), key(key), parent(-1), left(-1), right(-1), splitValue(0), depth(depth), to_split(split) {}
+    Node(int key, int start, int end, int depth = 0, bool is_leaf = false)
+        : start(start), end(end), key(key), parent(-1), left(-1), right(-1), splitValue(0), depth(depth), is_leaf(is_leaf) {}
 };
 
 /**
@@ -73,9 +73,9 @@ protected:
     int keyCounter;
     float search_space;
 
-    int allocNode(int key, int start, int end, int depth = 0, bool to_split = true)
+    int allocNode(int key, int start, int end, int depth = 0, bool is_leaf = false)
     {
-        nodePool.emplace_back(key, start, end, depth, to_split);
+        nodePool.emplace_back(key, start, end, depth, is_leaf);
         return static_cast<int>(nodePool.size() - 1);
     }
 
@@ -133,6 +133,14 @@ public:
         const_cast<int &>(this->offset) = this->treeIndex * (new_depth + 1);
         const_cast<int &>(this->treeDepth) = new_depth;
     }
+
+    const std::vector<Node> &getNodePool() const { return nodePool; }
+
+    const std::vector<uint32_t> &getIndices() const { return indices; }
+
+    int getRootIndex() const { return root_idx; }
+
+    int getOffset() const { return offset; }
 
     int getMaxLeafSize() const { return max_leaf_size; }
 
@@ -247,6 +255,7 @@ public:
                     }
                     else
                     {
+                        updatedNode.is_leaf = true;
                         true_depth = std::max(true_depth, (int)updatedNode.depth);
                         max_leaf_size = std::max(max_leaf_size, (int)updatedNode.getSize());
                     }
@@ -288,6 +297,7 @@ public:
 
             if (nodePool[curr_idx].getSize() <= target_leaf_size)
             {
+                nodePool[curr_idx].is_leaf = true;
                 true_depth = std::max(true_depth, (int)nodePool[curr_idx].depth);
                 max_leaf_size = std::max(max_leaf_size, (int)nodePool[curr_idx].getSize());
                 continue;

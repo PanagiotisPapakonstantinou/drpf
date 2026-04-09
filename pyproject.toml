@@ -1,3 +1,8 @@
 [build-system]
 requires = ["numpy", "setuptools", "wheel", "Cython"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+markers = [
+    "gpu: tests that require a CUDA-capable GPU",
+]
