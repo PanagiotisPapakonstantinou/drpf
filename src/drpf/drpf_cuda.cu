@@ -447,3 +447,119 @@ void free_gpu_handle(GPUDataHandle &h)
 
     h = GPUDataHandle{};
 }
+
+
+// ============================================================================
+// GPU Indexing Math (Projections & Norms)
+// ============================================================================
+
+__global__ void compute_squared_norms_kernel(const float* __restrict__ data, float* __restrict__ norms, int rows, int cols) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < rows) {
+        float sum = 0.0f;
+        for (int i = 0; i < cols; ++i) {
+            float val = data[row * cols + i];
+            sum += val * val;
+        }
+        norms[row] = sum;
+    }
+}
+
+__global__ void cast_float_to_half_kernel(const float* __restrict__ in_f32, __half* __restrict__ out_f16, size_t total_elements) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total_elements) {
+        out_f16[idx] = __float2half(in_f32[idx]);
+    }
+}
+
+void compute_gpu_projections_and_norms(
+    const float* h_data, 
+    const float* h_proj, 
+    void* h_out_half, 
+    float* h_norms,
+    int rows, 
+    int cols, 
+    int proj_cols) 
+{
+    if (!h_data || !h_proj || !h_out_half || !h_norms) {
+        throw std::invalid_argument("DRPF CUDA Error: One of the host matrix pointers is NULL.");
+    }
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    // 1. Allocate and copy the core dataset & norms (Stays on GPU the whole time)
+    float *d_data = nullptr, *d_norms = nullptr;
+    CUDA_CHECK(cudaMalloc((void**)&d_data, (size_t)rows * cols * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void**)&d_norms, (size_t)rows * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_data, h_data, (size_t)rows * cols * sizeof(float), cudaMemcpyHostToDevice));
+
+    // 2. Compute Norms immediately
+    int threadsPerBlock = 256;
+    int blocksNorms = (rows + threadsPerBlock - 1) / threadsPerBlock;
+    if (blocksNorms < 1) blocksNorms = 1;
+    compute_squared_norms_kernel<<<blocksNorms, threadsPerBlock>>>(d_data, d_norms, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Copy norms back early (optional, but gets it out of the way)
+    CUDA_CHECK(cudaMemcpy(h_norms, d_norms, (size_t)rows * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // 3. Setup VRAM-Safe Chunking for Projections
+    // 512 cols * 1M rows = ~2GB f32 buffer + ~1GB f16 buffer. Very safe for VRAM.
+    const int MAX_CHUNK_COLS = 512; 
+
+    float *d_proj_chunk = nullptr, *d_out_f32_chunk = nullptr;
+    __half *d_out_f16_chunk = nullptr;
+
+    CUDA_CHECK(cudaMalloc((void**)&d_proj_chunk, (size_t)cols * MAX_CHUNK_COLS * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void**)&d_out_f32_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void**)&d_out_f16_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(__half)));
+
+    __half* h_out_f16 = reinterpret_cast<__half*>(h_out_half);
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    // 4. Process the Matrix Multiplication in Chunks
+    for (int offset = 0; offset < proj_cols; offset += MAX_CHUNK_COLS) {
+        int current_cols = std::min(MAX_CHUNK_COLS, proj_cols - offset);
+
+        // Copy a chunk of the projection matrix. 
+        // Because Eigen is ColMajor, column 'offset' starts exactly at (offset * cols)
+        CUDA_CHECK(cudaMemcpy(d_proj_chunk, 
+                              h_proj + ((size_t)offset * cols), 
+                              (size_t)cols * current_cols * sizeof(float), 
+                              cudaMemcpyHostToDevice));
+
+        // Multiply chunk
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                 rows, current_cols, cols,
+                                 &alpha,
+                                 d_data, cols,
+                                 d_proj_chunk, cols,
+                                 &beta,
+                                 d_out_f32_chunk, rows));
+
+        // Cast chunk to FP16
+        size_t total_elements = (size_t)rows * current_cols;
+        int blocksCast = (int)((total_elements + threadsPerBlock - 1) / threadsPerBlock);
+        if (blocksCast < 1) blocksCast = 1;
+
+        cast_float_to_half_kernel<<<blocksCast, threadsPerBlock>>>(d_out_f32_chunk, d_out_f16_chunk, total_elements);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // Copy FP16 chunk back directly into the correct slice of the CPU's Eigen matrix
+        CUDA_CHECK(cudaMemcpy(h_out_f16 + ((size_t)offset * rows), 
+                              d_out_f16_chunk, 
+                              (size_t)rows * current_cols * sizeof(__half), 
+                              cudaMemcpyDeviceToHost));
+    }
+
+    // 5. Cleanup VRAM
+    CUDA_CHECK(cudaFree(d_data));
+    CUDA_CHECK(cudaFree(d_norms));
+    CUDA_CHECK(cudaFree(d_proj_chunk));
+    CUDA_CHECK(cudaFree(d_out_f32_chunk));
+    CUDA_CHECK(cudaFree(d_out_f16_chunk));
+    CUBLAS_CHECK(cublasDestroy(handle));
+}
