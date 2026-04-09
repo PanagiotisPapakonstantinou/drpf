@@ -151,11 +151,15 @@ def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None):
     subprocess.check_call(cmd)
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+CU_SRC = os.path.join(HERE, "src", "drpf", "drpf_cuda.cu")
+
 CUDA_HOME, NVCC = find_cuda()
+
 USE_CUDA = (
     CUDA_HOME is not None
     and not os.environ.get("DRPF_DISABLE_CUDA")
-    and os.path.exists("drpf_cuda.cu")
+    and os.path.exists(CU_SRC)
 )
 
 cuda_objects = []
@@ -167,12 +171,11 @@ cuda_runtime_dirs = []
 if USE_CUDA:
     print(f"CUDA found at {CUDA_HOME}; building GPU backend.")
     cuda_obj_name = "drpf_cuda.obj" if sys.platform == "win32" else "drpf_cuda.o"
-    cuda_obj = os.path.join("build", cuda_obj_name)
+    cuda_obj = os.path.join(HERE, "build", cuda_obj_name)
     arch = os.environ.get("DRPF_CUDA_ARCH", "sm_75")
     host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")  # optional override
 
-    build_cuda_object(NVCC, "drpf_cuda.cu", cuda_obj,
-                      arch=arch, host_compiler=host_cxx)
+    build_cuda_object(NVCC, CU_SRC, cuda_obj, arch=arch, host_compiler=host_cxx)
 
     cuda_objects.append(cuda_obj)
     cuda_include_dirs.append(os.path.join(CUDA_HOME, "include"))
@@ -321,6 +324,14 @@ else:  # Windows
         "/Zc:cplusplus",
     ]
     link_flags = []
+
+if USE_CUDA:
+    if sys.platform == "win32":
+        compile_flags.append("/DUSE_CUDA")
+    else:
+        compile_flags.append("-DUSE_CUDA")
+        for d in cuda_runtime_dirs:
+            link_flags.append(f"-Wl,-rpath,{d}")
 
 # ===============================================================
 # 5. Extension module definition
