@@ -63,7 +63,7 @@ __global__ void ann_search_kernel(
     const int tid = threadIdx.x;
     const int lane = tid & 31;
     const int warp_id = tid >> 5;
-    const int n_warps = blockDim.x >> 5; 
+    const int n_warps = blockDim.x >> 5;
     const unsigned mask = 0xffffffff;
 
     // ---- Shared memory layout ----
@@ -79,7 +79,7 @@ __global__ void ann_search_kernel(
     __shared__ float topk_dist[MAX_K];
     __shared__ int topk_idx[MAX_K];
 
-    __shared__ float s_warp_dsq[32]; 
+    __shared__ float s_warp_dsq[32];
     __shared__ int s_warp_cid[32];
 
     int *s_candidates = d_cand_buf + ((size_t)q_idx * max_search_buffer_size);
@@ -108,13 +108,13 @@ __global__ void ann_search_kernel(
         s_query[i] = v;
         thread_q_norm += v * v;
     }
-    
+
     // Cache the projected query for zero-latency tree traversal
-    for (int i = tid; i < proj_cols; i += blockDim.x) 
+    for (int i = tid; i < proj_cols; i += blockDim.x)
     {
         s_proj_query[i] = p_qrow[i];
     }
-    
+
     atomicAdd(&s_query_norm, thread_q_norm);
     __syncthreads();
 
@@ -134,7 +134,7 @@ __global__ void ann_search_kernel(
                     for (int c = 0; c < node.leaf_size; ++c)
                     {
                         int cid = d_leaf_data[node.leaf_start_idx + c];
-                        
+
                         // Safe deduplication
                         if (atomicExch(&seen[cid], generation) != generation)
                         {
@@ -145,7 +145,7 @@ __global__ void ann_search_kernel(
                     }
                     break;
                 }
-                
+
                 // Fetch perfectly from L1 Shared Memory
                 float qv = s_proj_query[node.split_dim];
                 curr = (qv < node.split_val) ? node.left_child : node.right_child;
@@ -173,7 +173,7 @@ __global__ void ann_search_kernel(
             const __half *drow = d_full_dataset + (size_t)cid * dim;
 
             float dot = 0.0f;
-            int dim_pairs = dim >> 1; 
+            int dim_pairs = dim >> 1;
             const __half2 *drow2 = reinterpret_cast<const __half2 *>(drow);
 
             for (int p = lane; p < dim_pairs; p += 32)
@@ -197,7 +197,8 @@ __global__ void ann_search_kernel(
             if (lane == 0)
             {
                 float dsq = qn + d_norms[cid] - 2.0f * dot;
-                if (dsq < 0.0f) dsq = 0.0f;
+                if (dsq < 0.0f)
+                    dsq = 0.0f;
                 my_dsq = dsq;
                 my_cid = cid;
             }
@@ -210,7 +211,6 @@ __global__ void ann_search_kernel(
         }
         __syncthreads();
 
-
         if (warp_id == 0 && lane == 0)
         {
             int rem = num_candidates - base;
@@ -219,19 +219,20 @@ __global__ void ann_search_kernel(
             {
                 float dsq = s_warp_dsq[w];
                 int cid = s_warp_cid[w];
-                if (cid < 0) continue;
-                
+                if (cid < 0)
+                    continue;
+
                 if (dsq < topk_dist[k_eff - 1])
                 {
                     int j = k_eff - 1;
                     while (j > 0 && topk_dist[j - 1] > dsq)
                     {
                         topk_dist[j] = topk_dist[j - 1];
-                        topk_idx[j]  = topk_idx[j - 1];
+                        topk_idx[j] = topk_idx[j - 1];
                         --j;
                     }
                     topk_dist[j] = dsq;
-                    topk_idx[j]  = cid;
+                    topk_idx[j] = cid;
                 }
             }
         }
@@ -284,7 +285,7 @@ GPUDataHandle setup_gpu_backend(
 
     int target_inflight = prop.multiProcessorCount * std::max(1, blocks_per_sm);
     int auto_batch = std::min(max_batch, target_inflight * 4);
-    auto_batch = std::max(auto_batch, prop.multiProcessorCount); 
+    auto_batch = std::max(auto_batch, prop.multiProcessorCount);
     h.max_batch = auto_batch;
 
     CUDA_CHECK(cudaMalloc(&h.d_full_dataset, (size_t)rows * cols * sizeof(float)));
@@ -365,7 +366,8 @@ static void search_chunk(
     const float *queries, int n_queries, int dim, int k,
     int *out_indices, float *out_distances)
 {
-    if (k > h.max_k) throw std::runtime_error("k exceeds GPU handle max_k");
+    if (k > h.max_k)
+        throw std::runtime_error("k exceeds GPU handle max_k");
 
     h.generation++;
     if (h.generation == 0)
@@ -388,7 +390,7 @@ static void search_chunk(
 
     int tpb = DRPF_BLOCK_SIZE;
     int bpg = n_queries;
-    
+
     // Crucial: Allocate enough memory for BOTH the query and the projected query
     size_t smem_bytes = ((size_t)h.cols * sizeof(float)) + ((size_t)h.proj_cols * sizeof(float));
 
@@ -430,34 +432,50 @@ void search_gpu_batch(
 // ============================================================================
 void free_gpu_handle(GPUDataHandle &h)
 {
-    if (h.cublas) cublasDestroy(h.cublas);
-    if (h.d_queries) cudaFree(h.d_queries);
-    if (h.d_projected_queries) cudaFree(h.d_projected_queries);
-    if (h.d_out_idx) cudaFree(h.d_out_idx);
-    if (h.d_out_dist) cudaFree(h.d_out_dist);
-    if (h.d_cand_buf) cudaFree(h.d_cand_buf);
-    if (h.d_full_dataset) cudaFree(h.d_full_dataset);
-    if (h.d_full_dataset_h16) cudaFree(h.d_full_dataset_h16);
-    if (h.d_norms) cudaFree(h.d_norms);
-    if (h.d_projection_matrix) cudaFree(h.d_projection_matrix);
-    if (h.d_nodes) cudaFree(h.d_nodes);
-    if (h.d_leaf_data) cudaFree(h.d_leaf_data);
-    if (h.d_tree_roots) cudaFree(h.d_tree_roots);
-    if (h.d_seen) cudaFree(h.d_seen);
+    if (h.cublas)
+        cublasDestroy(h.cublas);
+    if (h.d_queries)
+        cudaFree(h.d_queries);
+    if (h.d_projected_queries)
+        cudaFree(h.d_projected_queries);
+    if (h.d_out_idx)
+        cudaFree(h.d_out_idx);
+    if (h.d_out_dist)
+        cudaFree(h.d_out_dist);
+    if (h.d_cand_buf)
+        cudaFree(h.d_cand_buf);
+    if (h.d_full_dataset)
+        cudaFree(h.d_full_dataset);
+    if (h.d_full_dataset_h16)
+        cudaFree(h.d_full_dataset_h16);
+    if (h.d_norms)
+        cudaFree(h.d_norms);
+    if (h.d_projection_matrix)
+        cudaFree(h.d_projection_matrix);
+    if (h.d_nodes)
+        cudaFree(h.d_nodes);
+    if (h.d_leaf_data)
+        cudaFree(h.d_leaf_data);
+    if (h.d_tree_roots)
+        cudaFree(h.d_tree_roots);
+    if (h.d_seen)
+        cudaFree(h.d_seen);
 
     h = GPUDataHandle{};
 }
-
 
 // ============================================================================
 // GPU Indexing Math (Projections & Norms)
 // ============================================================================
 
-__global__ void compute_squared_norms_kernel(const float* __restrict__ data, float* __restrict__ norms, int rows, int cols) {
+__global__ void compute_squared_norms_kernel(const float *__restrict__ data, float *__restrict__ norms, int rows, int cols)
+{
     int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row < rows) {
+    if (row < rows)
+    {
         float sum = 0.0f;
-        for (int i = 0; i < cols; ++i) {
+        for (int i = 0; i < cols; ++i)
+        {
             float val = data[row * cols + i];
             sum += val * val;
         }
@@ -465,72 +483,68 @@ __global__ void compute_squared_norms_kernel(const float* __restrict__ data, flo
     }
 }
 
-__global__ void cast_float_to_half_kernel(const float* __restrict__ in_f32, __half* __restrict__ out_f16, size_t total_elements) {
+__global__ void cast_float_to_half_kernel(const float *__restrict__ in_f32, __half *__restrict__ out_f16, size_t total_elements)
+{
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < total_elements) {
+    if (idx < total_elements)
+    {
         out_f16[idx] = __float2half(in_f32[idx]);
     }
 }
 
 void compute_gpu_projections_and_norms(
-    const float* h_data, 
-    const float* h_proj, 
-    void* h_out_half, 
-    float* h_norms,
-    int rows, 
-    int cols, 
-    int proj_cols) 
+    const float *h_data,
+    const float *h_proj,
+    void *h_out_half,
+    float *h_norms,
+    int rows,
+    int cols,
+    int proj_cols)
 {
-    if (!h_data || !h_proj || !h_out_half || !h_norms) {
+    if (!h_data || !h_proj || !h_out_half || !h_norms)
+    {
         throw std::invalid_argument("DRPF CUDA Error: One of the host matrix pointers is NULL.");
     }
 
     cublasHandle_t handle;
     CUBLAS_CHECK(cublasCreate(&handle));
 
-    // 1. Allocate and copy the core dataset & norms (Stays on GPU the whole time)
     float *d_data = nullptr, *d_norms = nullptr;
-    CUDA_CHECK(cudaMalloc((void**)&d_data, (size_t)rows * cols * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void**)&d_norms, (size_t)rows * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&d_data, (size_t)rows * cols * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&d_norms, (size_t)rows * sizeof(float)));
     CUDA_CHECK(cudaMemcpy(d_data, h_data, (size_t)rows * cols * sizeof(float), cudaMemcpyHostToDevice));
 
-    // 2. Compute Norms immediately
     int threadsPerBlock = 256;
     int blocksNorms = (rows + threadsPerBlock - 1) / threadsPerBlock;
-    if (blocksNorms < 1) blocksNorms = 1;
+    if (blocksNorms < 1)
+        blocksNorms = 1;
     compute_squared_norms_kernel<<<blocksNorms, threadsPerBlock>>>(d_data, d_norms, rows, cols);
     CUDA_CHECK(cudaGetLastError());
-    
-    // Copy norms back early (optional, but gets it out of the way)
+
     CUDA_CHECK(cudaMemcpy(h_norms, d_norms, (size_t)rows * sizeof(float), cudaMemcpyDeviceToHost));
 
-    // 3. Setup VRAM-Safe Chunking for Projections
-    // 512 cols * 1M rows = ~2GB f32 buffer + ~1GB f16 buffer. Very safe for VRAM.
-    const int MAX_CHUNK_COLS = 512; 
+    const int MAX_CHUNK_COLS = 512;
 
     float *d_proj_chunk = nullptr, *d_out_f32_chunk = nullptr;
     __half *d_out_f16_chunk = nullptr;
 
-    CUDA_CHECK(cudaMalloc((void**)&d_proj_chunk, (size_t)cols * MAX_CHUNK_COLS * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void**)&d_out_f32_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void**)&d_out_f16_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(__half)));
+    CUDA_CHECK(cudaMalloc((void **)&d_proj_chunk, (size_t)cols * MAX_CHUNK_COLS * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&d_out_f32_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&d_out_f16_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(__half)));
 
-    __half* h_out_f16 = reinterpret_cast<__half*>(h_out_half);
+    __half *h_out_f16 = reinterpret_cast<__half *>(h_out_half);
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
-    // 4. Process the Matrix Multiplication in Chunks
-    for (int offset = 0; offset < proj_cols; offset += MAX_CHUNK_COLS) {
+    for (int offset = 0; offset < proj_cols; offset += MAX_CHUNK_COLS)
+    {
         int current_cols = std::min(MAX_CHUNK_COLS, proj_cols - offset);
 
-        // Copy a chunk of the projection matrix. 
-        // Because Eigen is ColMajor, column 'offset' starts exactly at (offset * cols)
-        CUDA_CHECK(cudaMemcpy(d_proj_chunk, 
-                              h_proj + ((size_t)offset * cols), 
-                              (size_t)cols * current_cols * sizeof(float), 
+        CUDA_CHECK(cudaMemcpy(d_proj_chunk,
+                              h_proj + ((size_t)offset * cols),
+                              (size_t)cols * current_cols * sizeof(float),
                               cudaMemcpyHostToDevice));
 
-        // Multiply chunk
         CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                                  rows, current_cols, cols,
                                  &alpha,
@@ -539,23 +553,21 @@ void compute_gpu_projections_and_norms(
                                  &beta,
                                  d_out_f32_chunk, rows));
 
-        // Cast chunk to FP16
         size_t total_elements = (size_t)rows * current_cols;
         int blocksCast = (int)((total_elements + threadsPerBlock - 1) / threadsPerBlock);
-        if (blocksCast < 1) blocksCast = 1;
+        if (blocksCast < 1)
+            blocksCast = 1;
 
         cast_float_to_half_kernel<<<blocksCast, threadsPerBlock>>>(d_out_f32_chunk, d_out_f16_chunk, total_elements);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        // Copy FP16 chunk back directly into the correct slice of the CPU's Eigen matrix
-        CUDA_CHECK(cudaMemcpy(h_out_f16 + ((size_t)offset * rows), 
-                              d_out_f16_chunk, 
-                              (size_t)rows * current_cols * sizeof(__half), 
+        CUDA_CHECK(cudaMemcpy(h_out_f16 + ((size_t)offset * rows),
+                              d_out_f16_chunk,
+                              (size_t)rows * current_cols * sizeof(__half),
                               cudaMemcpyDeviceToHost));
     }
 
-    // 5. Cleanup VRAM
     CUDA_CHECK(cudaFree(d_data));
     CUDA_CHECK(cudaFree(d_norms));
     CUDA_CHECK(cudaFree(d_proj_chunk));
