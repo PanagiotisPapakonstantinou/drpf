@@ -305,13 +305,13 @@ public:
 
         rndm_projections.resize(data.rows(), (internal_depth + 1) * numTrees);
         norms.resize(data.rows());
-        
-                if (device_kind == Device::GPU)
+
+        if (device_kind == Device::GPU)
         {
 #ifdef USE_CUDA
-            
+
             extern void compute_gpu_projections_and_norms(
-                const float*, const float*, void*, float*, int, int, int);
+                const float *, const float *, void *, float *, int, int, int);
 
             compute_gpu_projections_and_norms(
                 data.data(),
@@ -320,8 +320,7 @@ public:
                 norms.data(),
                 static_cast<int>(data.rows()),
                 static_cast<int>(data.cols()),
-                static_cast<int>(projectionMatrix.cols())
-            );
+                static_cast<int>(projectionMatrix.cols()));
 #else
             throw std::runtime_error("GPU backend requested but built without USE_CUDA");
 #endif
@@ -335,6 +334,8 @@ public:
         forest = buildForest(rndm_projections, numTrees, internal_depth,
                              split_depth, search_space, approximate_search_space_size);
         compact();
+
+        rndm_projections.resize(0, 0);
 
         if (device_kind == Device::GPU)
         {
