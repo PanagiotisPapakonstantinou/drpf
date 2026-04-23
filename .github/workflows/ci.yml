@@ -123,7 +123,7 @@ jobs:
         with:
           cuda: '12.4.0'
           method: 'network'
-          sub-packages: '["nvcc", "cudart-dev"]'
+          sub-packages: '["nvcc", "cudart-dev", "cublas", "cublas-dev"]'
 
       - name: Install system dependencies
         run: |
