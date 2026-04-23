@@ -126,7 +126,7 @@ def cuda_lib_dir(cuda_home):
     return os.path.join(cuda_home, "lib")
 
 
-def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None):
+def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None, include_dirs=None):
     """Compile a .cu source into a relocatable object file with nvcc."""
     os.makedirs(os.path.dirname(obj) or ".", exist_ok=True)
 
@@ -138,6 +138,10 @@ def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None):
         "-DUSE_CUDA",
         f"-arch={arch}",
     ]
+
+    if include_dirs:
+        for inc_dir in include_dirs:
+            cmd += [f"-I{inc_dir}"]
 
     if sys.platform != "win32":
         cmd += ["-Xcompiler", "-fPIC"]
@@ -175,7 +179,14 @@ if USE_CUDA:
     arch = os.environ.get("DRPF_CUDA_ARCH", "sm_75")
     host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")  # optional override
 
-    build_cuda_object(NVCC, CU_SRC, cuda_obj, arch=arch, host_compiler=host_cxx)
+    build_cuda_object(
+        NVCC, 
+        CU_SRC, 
+        cuda_obj, 
+        arch=arch, 
+        host_compiler=host_cxx, 
+        include_dirs=[os.path.join(CUDA_HOME, "include")]
+    )
 
     cuda_objects.append(cuda_obj)
     cuda_include_dirs.append(os.path.join(CUDA_HOME, "include"))
