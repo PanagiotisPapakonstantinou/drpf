@@ -123,12 +123,12 @@ jobs:
         with:
           cuda: '12.4.0'
           method: 'network'
-          sub-packages: '["nvcc", "cudart-dev", "cublas", "cublas-dev"]'
+          sub-packages: '["nvcc", "cudart-dev"]'
 
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends g++ libomp-dev
+          sudo apt-get install -y --no-install-recommends g++ libomp-dev libcublas-dev-12-4
 
       - name: Cache Eigen
         uses: actions/cache@v4
