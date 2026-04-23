@@ -177,7 +177,7 @@ if USE_CUDA:
     cuda_obj_name = "drpf_cuda.obj" if sys.platform == "win32" else "drpf_cuda.o"
     cuda_obj = os.path.join(HERE, "build", cuda_obj_name)
     arch = os.environ.get("DRPF_CUDA_ARCH", "sm_75")
-    host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")  # optional override
+    host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")
 
     build_cuda_object(
         NVCC, 
