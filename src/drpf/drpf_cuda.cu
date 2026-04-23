@@ -38,25 +38,90 @@ __global__ void float_to_half_kernel(const float *src, __half *dst, size_t n)
         dst[i] = __float2half(src[i]);
 }
 
-#define DRPF_BLOCK_SIZE 256
-
-__global__ void ann_search_kernel(
-    const float *__restrict__ d_projected_queries,
-    const float *__restrict__ d_orig_queries,
+__global__ void traverse_trees_kernel(
+    const float *__restrict__ d_proj_query,
     const GPUNode *__restrict__ d_nodes,
     const unsigned int *__restrict__ d_leaf_data,
     const int *__restrict__ d_tree_roots,
-    int num_trees, int n_queries, int proj_cols, int k,
+    int num_trees, int proj_cols, int max_search_buffer_size,
+    int *__restrict__ d_cand_buf,
+    int *__restrict__ d_num_candidates,
+    uint32_t *__restrict__ d_seen, uint32_t generation,
+    int rows_total)
+{
+    const int tid = threadIdx.x;
+    const int q_idx = blockIdx.x;
+
+    const float *proj_q = d_proj_query + (size_t)q_idx * proj_cols;
+
+    constexpr int MAX_TREES = 512;
+    __shared__ int s_leaf_start[MAX_TREES];
+    __shared__ int s_leaf_size[MAX_TREES];
+    __shared__ int s_num_candidates;
+
+    int *s_candidates = d_cand_buf + (size_t)q_idx * max_search_buffer_size;
+
+    if (tid == 0)
+        s_num_candidates = 0;
+    __syncthreads();
+
+    // ---- Phase 1: each thread walks one or more trees ----
+    for (int t = tid; t < num_trees; t += blockDim.x)
+    {
+        int curr = d_tree_roots[t];
+        while (d_nodes[curr].left_child != -1)
+        {
+            float qv = proj_q[d_nodes[curr].split_dim];
+            curr = (qv < d_nodes[curr].split_val)
+                       ? d_nodes[curr].left_child
+                       : d_nodes[curr].right_child;
+        }
+        s_leaf_start[t] = d_nodes[curr].leaf_start_idx;
+        s_leaf_size[t] = d_nodes[curr].leaf_size;
+    }
+    __syncthreads();
+
+    // ---- Phase 2: all threads cooperatively read + dedup each leaf ----
+    uint32_t *seen = d_seen + (size_t)q_idx * rows_total;
+
+    for (int t = 0; t < num_trees; ++t)
+    {
+        const int start = s_leaf_start[t];
+        const int size = s_leaf_size[t];
+
+        for (int i = tid; i < size; i += blockDim.x)
+        {
+            int cid = (int)d_leaf_data[start + i];
+            if (atomicExch(&seen[cid], generation) != generation)
+            {
+                int pos = atomicAdd(&s_num_candidates, 1);
+                if (pos < max_search_buffer_size)
+                    s_candidates[pos] = cid;
+            }
+        }
+    }
+    __syncthreads();
+
+    if (tid == 0)
+        d_num_candidates[q_idx] = min(s_num_candidates, max_search_buffer_size);
+}
+
+// ============================================================================
+
+#define DRPF_BLOCK_SIZE 256
+
+__global__ void ann_search_kernel(
+    const float *__restrict__ d_orig_queries,
+    int n_queries, int k,
     int max_search_buffer_size,
     const __half *__restrict__ d_full_dataset,
     const float *__restrict__ d_norms,
     int dim,
     int *__restrict__ d_out_indices, float *__restrict__ d_out_distances,
-    uint32_t *__restrict__ d_seen, int rows_total,
-    int *__restrict__ d_cand_buf,
-    uint32_t generation)
+    const int *__restrict__ d_cand_buf,
+    const int *__restrict__ d_num_candidates)
 {
-    int q_idx = blockIdx.x;
+    const int q_idx = blockIdx.x;
     if (q_idx >= n_queries)
         return;
 
@@ -66,23 +131,16 @@ __global__ void ann_search_kernel(
     const int n_warps = blockDim.x >> 5;
     const unsigned mask = 0xffffffff;
 
-    // ---- Shared memory layout ----
+    // ---- Shared memory ----
     extern __shared__ unsigned char smem_raw[];
     float *s_query = reinterpret_cast<float *>(smem_raw);
-    float *s_proj_query = reinterpret_cast<float *>(s_query + dim); // High-speed cache
 
-    __shared__ int s_num_candidates;
     __shared__ float s_query_norm;
-
     constexpr int MAX_K = 128;
-    // REVERTED to the single, safe queue
     __shared__ float topk_dist[MAX_K];
     __shared__ int topk_idx[MAX_K];
-
     __shared__ float s_warp_dsq[32];
     __shared__ int s_warp_cid[32];
-
-    int *s_candidates = d_cand_buf + ((size_t)q_idx * max_search_buffer_size);
 
     // ---- Init ----
     if (tid < MAX_K)
@@ -91,16 +149,11 @@ __global__ void ann_search_kernel(
         topk_idx[tid] = -1;
     }
     if (tid == 0)
-    {
-        s_num_candidates = 0;
         s_query_norm = 0.0f;
-    }
     __syncthreads();
 
-    // ---- Cache queries ----
+    // ---- Cache query vector + compute squared norm ----
     const float *qrow = d_orig_queries + (size_t)q_idx * dim;
-    const float *p_qrow = d_projected_queries + (size_t)q_idx * proj_cols;
-
     float thread_q_norm = 0.0f;
     for (int i = tid; i < dim; i += blockDim.x)
     {
@@ -108,74 +161,29 @@ __global__ void ann_search_kernel(
         s_query[i] = v;
         thread_q_norm += v * v;
     }
-
-    // Cache the projected query for zero-latency tree traversal
-    for (int i = tid; i < proj_cols; i += blockDim.x)
-    {
-        s_proj_query[i] = p_qrow[i];
-    }
-
     atomicAdd(&s_query_norm, thread_q_norm);
     __syncthreads();
 
-    // ---- Traverse trees ----
-    if (num_trees > 0 && d_nodes != nullptr)
-    {
-        uint32_t *seen = d_seen + (size_t)q_idx * rows_total;
-
-        for (int t = tid; t < num_trees; t += blockDim.x)
-        {
-            int curr = d_tree_roots[t];
-            while (true)
-            {
-                GPUNode node = d_nodes[curr];
-                if (node.left_child == -1)
-                {
-                    for (int c = 0; c < node.leaf_size; ++c)
-                    {
-                        int cid = d_leaf_data[node.leaf_start_idx + c];
-
-                        // Safe deduplication
-                        if (atomicExch(&seen[cid], generation) != generation)
-                        {
-                            int pos = atomicAdd(&s_num_candidates, 1);
-                            if (pos < max_search_buffer_size)
-                                s_candidates[pos] = cid;
-                        }
-                    }
-                    break;
-                }
-
-                // Fetch perfectly from L1 Shared Memory
-                float qv = s_proj_query[node.split_dim];
-                curr = (qv < node.split_val) ? node.left_child : node.right_child;
-            }
-        }
-    }
-    __syncthreads();
-
     // ---- Distance phase: WARP-PER-CANDIDATE ----
-    int num_candidates = (s_num_candidates < max_search_buffer_size)
-                             ? s_num_candidates
-                             : max_search_buffer_size;
-    int k_eff = (k < MAX_K) ? k : MAX_K;
-    float qn = s_query_norm;
+    const int *s_candidates = d_cand_buf + (size_t)q_idx * max_search_buffer_size;
+    const int num_candidates = d_num_candidates[q_idx];
+    const int k_eff = (k < MAX_K) ? k : MAX_K;
+    const float qn = s_query_norm;
 
     for (int base = 0; base < num_candidates; base += n_warps)
     {
-        int my_slot = base + warp_id;
+        const int my_slot = base + warp_id;
         float my_dsq = 1e38f;
         int my_cid = -1;
 
         if (my_slot < num_candidates)
         {
-            int cid = s_candidates[my_slot];
+            const int cid = s_candidates[my_slot];
             const __half *drow = d_full_dataset + (size_t)cid * dim;
+            const __half2 *drow2 = reinterpret_cast<const __half2 *>(drow);
+            const int dim_pairs = dim >> 1;
 
             float dot = 0.0f;
-            int dim_pairs = dim >> 1;
-            const __half2 *drow2 = reinterpret_cast<const __half2 *>(drow);
-
             for (int p = lane; p < dim_pairs; p += 32)
             {
                 __half2 h2 = drow2[p];
@@ -185,12 +193,11 @@ __global__ void ann_search_kernel(
                 dot += s_query[d + 1] * f2.y;
             }
 
+            // Handle odd dimension
             if ((dim & 1) && lane == 0)
-            {
-                int d = dim - 1;
-                dot += s_query[d] * __half2float(drow[d]);
-            }
+                dot += s_query[dim - 1] * __half2float(drow[dim - 1]);
 
+            // Warp reduction
             for (int off = 16; off > 0; off >>= 1)
                 dot += __shfl_down_sync(mask, dot, off);
 
@@ -204,6 +211,7 @@ __global__ void ann_search_kernel(
             }
         }
 
+        // Lane 0 of each warp deposits its result into shared memory
         if (lane == 0)
         {
             s_warp_dsq[warp_id] = my_dsq;
@@ -211,14 +219,15 @@ __global__ void ann_search_kernel(
         }
         __syncthreads();
 
+        // Single thread merges this round's results into the top-k list
         if (warp_id == 0 && lane == 0)
         {
-            int rem = num_candidates - base;
-            int this_round = (rem < n_warps) ? rem : n_warps;
+            const int rem = num_candidates - base;
+            const int this_round = (rem < n_warps) ? rem : n_warps;
             for (int w = 0; w < this_round; ++w)
             {
-                float dsq = s_warp_dsq[w];
-                int cid = s_warp_cid[w];
+                const float dsq = s_warp_dsq[w];
+                const int cid = s_warp_cid[w];
                 if (cid < 0)
                     continue;
 
@@ -355,16 +364,15 @@ GPUDataHandle setup_gpu_backend(
     CUDA_CHECK(cudaMemset(h.d_seen, 0,
                           (size_t)h.max_batch * rows * sizeof(uint32_t)));
 
+    CUDA_CHECK(cudaMalloc(&h.d_num_candidates,
+                          (size_t)h.max_batch * sizeof(int)));
+
     return h;
 }
 
-// ============================================================================
-// Search: one chunk (n_queries <= handle.max_batch).
-// ============================================================================
-static void search_chunk(
-    GPUDataHandle &h,
-    const float *queries, int n_queries, int dim, int k,
-    int *out_indices, float *out_distances)
+static void search_chunk(GPUDataHandle &h,
+                         const float *queries, int n_queries, int dim, int k,
+                         int *out_indices, float *out_distances)
 {
     if (k > h.max_k)
         throw std::runtime_error("k exceeds GPU handle max_k");
@@ -372,37 +380,42 @@ static void search_chunk(
     h.generation++;
     if (h.generation == 0)
     {
-        CUDA_CHECK(cudaMemset(h.d_seen, 0, (size_t)h.max_batch * h.rows * sizeof(uint32_t)));
+        CUDA_CHECK(cudaMemset(h.d_seen, 0,
+                              (size_t)h.max_batch * h.rows * sizeof(uint32_t)));
         h.generation = 1;
     }
 
     CUDA_CHECK(cudaMemcpy(h.d_queries, queries,
-                          (size_t)n_queries * dim * sizeof(float),
-                          cudaMemcpyHostToDevice));
+                          (size_t)n_queries * dim * sizeof(float), cudaMemcpyHostToDevice));
 
     float alpha = 1.0f, beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemm(
-        h.cublas, CUBLAS_OP_T, CUBLAS_OP_N,
-        h.proj_cols, n_queries, (int)h.cols,
-        &alpha, h.d_projection_matrix, (int)h.cols,
-        h.d_queries, (int)h.cols,
-        &beta, h.d_projected_queries, h.proj_cols));
+    CUBLAS_CHECK(cublasSgemm(h.cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                             h.proj_cols, n_queries, (int)h.cols,
+                             &alpha, h.d_projection_matrix, (int)h.cols,
+                             h.d_queries, (int)h.cols,
+                             &beta, h.d_projected_queries, h.proj_cols));
 
-    int tpb = DRPF_BLOCK_SIZE;
-    int bpg = n_queries;
-
-    // Crucial: Allocate enough memory for BOTH the query and the projected query
-    size_t smem_bytes = ((size_t)h.cols * sizeof(float)) + ((size_t)h.proj_cols * sizeof(float));
-
-    ann_search_kernel<<<bpg, tpb, smem_bytes>>>(
-        h.d_projected_queries, h.d_queries, h.d_nodes, h.d_leaf_data, h.d_tree_roots,
-        h.num_trees, n_queries, h.proj_cols, k, h.max_buf,
-        h.d_full_dataset_h16, h.d_norms, (int)h.cols,
-        h.d_out_idx, h.d_out_dist, h.d_seen, (int)h.rows, h.d_cand_buf, h.generation);
+    // Launch 1: traverse — fills d_cand_buf + d_num_candidates
+    traverse_trees_kernel<<<n_queries, DRPF_BLOCK_SIZE>>>(
+        h.d_projected_queries,
+        h.d_nodes, h.d_leaf_data, h.d_tree_roots,
+        h.num_trees, h.proj_cols, h.max_buf,
+        h.d_cand_buf, h.d_num_candidates,
+        h.d_seen, h.generation, (int)h.rows);
     CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaMemcpy(out_indices, h.d_out_idx, (size_t)n_queries * k * sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(out_distances, h.d_out_dist, (size_t)n_queries * k * sizeof(float), cudaMemcpyDeviceToHost));
+    size_t smem = (size_t)h.cols * sizeof(float);
+    ann_search_kernel<<<n_queries, DRPF_BLOCK_SIZE, smem>>>(
+        h.d_queries, n_queries, k, h.max_buf,
+        h.d_full_dataset_h16, h.d_norms, (int)h.cols,
+        h.d_out_idx, h.d_out_dist,
+        h.d_cand_buf, h.d_num_candidates);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaMemcpy(out_indices, h.d_out_idx,
+                          (size_t)n_queries * k * sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(out_distances, h.d_out_dist,
+                          (size_t)n_queries * k * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 // ============================================================================
@@ -460,6 +473,9 @@ void free_gpu_handle(GPUDataHandle &h)
         cudaFree(h.d_tree_roots);
     if (h.d_seen)
         cudaFree(h.d_seen);
+
+    if (h.d_num_candidates)
+        cudaFree(h.d_num_candidates);
 
     h = GPUDataHandle{};
 }

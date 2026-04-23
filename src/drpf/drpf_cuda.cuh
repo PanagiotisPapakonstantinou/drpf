@@ -60,6 +60,7 @@ struct GPUDataHandle
     int *d_cand_buf = nullptr;
     uint32_t *d_seen = nullptr;
     uint32_t generation = 0;
+    int *d_num_candidates = nullptr;
 
     int max_batch = 0; // largest n_queries supported by scratch
     int max_k = 0;     // largest k supported by scratch
