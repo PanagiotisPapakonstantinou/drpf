@@ -115,6 +115,25 @@ def find_cuda():
     return None, None
 
 
+def get_cuda_arch():
+    """Automatically detect the local GPU architecture via nvidia-smi."""
+    default_arch = "sm_75"
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            universal_newlines=True
+        )
+        caps = output.strip().split('\n')
+        if caps and caps[0]:
+            cap_str = caps[0].strip().replace('.', '')
+            print(f"Auto-detected GPU architecture: sm_{cap_str}")
+            return f"sm_{cap_str}"
+    except Exception as e:
+        print(f"Warning: Could not auto-detect GPU architecture. Defaulting to {default_arch}.")
+    
+    return default_arch
+
+
 def cuda_lib_dir(cuda_home):
     """Return the platform-appropriate CUDA library directory."""
     if sys.platform == "win32":
@@ -176,7 +195,7 @@ if USE_CUDA:
     print(f"CUDA found at {CUDA_HOME}; building GPU backend.")
     cuda_obj_name = "drpf_cuda.obj" if sys.platform == "win32" else "drpf_cuda.o"
     cuda_obj = os.path.join(HERE, "build", cuda_obj_name)
-    arch = os.environ.get("DRPF_CUDA_ARCH", "sm_75")
+    arch = os.environ.get("DRPF_CUDA_ARCH", get_cuda_arch())
     host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")
 
     build_cuda_object(
