@@ -149,8 +149,6 @@ public:
 
 /**
  * @brief Dense Random Projection Forest.
- * * Combines multiple BinarySplitTrees with Product Quantization (PQ) for
- * efficient Approximate Nearest Neighbor search.
  */
 class DRPF
 {
