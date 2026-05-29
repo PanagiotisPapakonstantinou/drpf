@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <cstdint>
 #include <span>
+#include <queue>
 #include <omp.h>
 
 template <typename Scalar>
