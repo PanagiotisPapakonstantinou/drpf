@@ -26,7 +26,6 @@
 #include <numeric>
 #include <stdexcept>
 #include <cstdint>
-#include <queue>
 #include <span>
 #include <omp.h>
 
@@ -62,30 +61,24 @@ private:
     int numTrees;
     int max_search_buffer_size;
 
-    struct Candidate
-    {
-        int idx;
-        float score;
-    };
-
     struct SearchContext
     {
         std::vector<int> candidates;
-        std::vector<float> scores;
         std::vector<uint32_t> seen;
         uint32_t generation = 0;
-        std::vector<int> indices_buffer;
+        std::vector<std::pair<float, int>> heap;
 
-        void resize(int rows, int max_candidates)
+        void resize(int rows, int max_candidates, int k)
         {
             if (seen.size() != rows)
             {
                 seen.assign(rows, 0);
                 generation = 0;
             }
-
             if (candidates.capacity() < max_candidates)
                 candidates.reserve(max_candidates);
+            if (heap.capacity() < k + 1)
+                heap.reserve(k + 1);
         }
     };
 
@@ -99,7 +92,7 @@ private:
         SearchContext &ctx)
     {
         int rows = static_cast<int>(data.rows());
-        ctx.resize(rows, max_search_buffer_size);
+        ctx.resize(rows, max_search_buffer_size, k);
 
         ctx.generation++;
         if (ctx.generation == 0)
@@ -135,12 +128,14 @@ private:
             return;
         }
 
-        ctx.scores.resize(n_cands);
-
         float q_norm = q.squaredNorm();
-        const float *data_raw = data.data();
+        float q_norm_sqrt = std::sqrt(q_norm);
         int dim = static_cast<int>(data.cols());
+        const float *data_raw = data.data();
         const int prefetch_dist = 32;
+
+        ctx.heap.clear();
+        float heap_worst = std::numeric_limits<float>::max();
 
         for (size_t i = 0; i < n_cands; ++i)
         {
@@ -151,40 +146,47 @@ private:
             }
 
             int idx = ctx.candidates[i];
+
+            // Cauchy-Schwarz lower bound: dist >= (||x|| - ||q||)^2
+            float x_norm_sqrt = std::sqrt((*norms)[idx]);
+            float diff = x_norm_sqrt - q_norm_sqrt;
+            float lower_bound = diff * diff;
+
+            if (lower_bound >= heap_worst)
+                continue;
+
             float dot = data.row(idx).dot(q);
-            ctx.scores[i] = (*norms)[idx] + q_norm - 2 * dot;
+            float dist = (*norms)[idx] + q_norm - 2.0f * dot;
+
+            if (static_cast<int>(ctx.heap.size()) < k)
+            {
+                ctx.heap.push_back({dist, idx});
+                std::push_heap(ctx.heap.begin(), ctx.heap.end());
+                if (static_cast<int>(ctx.heap.size()) == k)
+                    heap_worst = ctx.heap.front().first;
+            }
+            else if (dist < heap_worst)
+            {
+                std::pop_heap(ctx.heap.begin(), ctx.heap.end());
+                ctx.heap.back() = {dist, idx};
+                std::push_heap(ctx.heap.begin(), ctx.heap.end());
+                heap_worst = ctx.heap.front().first;
+            }
         }
 
-        if (ctx.indices_buffer.size() < n_cands)
-            ctx.indices_buffer.resize(n_cands);
+        std::sort_heap(ctx.heap.begin(), ctx.heap.end());
+        int k_eff = static_cast<int>(ctx.heap.size());
 
-        std::iota(ctx.indices_buffer.begin(), ctx.indices_buffer.begin() + n_cands, 0);
-
-        int k_eff = std::min((int)n_cands, k);
-
-        std::nth_element(ctx.indices_buffer.begin(),
-                         ctx.indices_buffer.begin() + k_eff,
-                         ctx.indices_buffer.begin() + n_cands,
-                         [&](int a, int b)
-                         { return ctx.scores[a] < ctx.scores[b]; });
-
-        std::sort(ctx.indices_buffer.begin(),
-                  ctx.indices_buffer.begin() + k_eff,
-                  [&](int a, int b)
-                  { return ctx.scores[a] < ctx.scores[b]; });
-
-        int cand;
-        for (int i = 0; i < k_eff; i++)
-        {
-            cand = ctx.indices_buffer[i];
-            results[i] = ctx.candidates[cand];
-            distances_sq[i] = ctx.scores[cand];
-        }
-
-        for (int i = k_eff; i < k; i++)
+        for (int i = k_eff; i < k; ++i)
         {
             results[i] = -1;
             distances_sq[i] = std::numeric_limits<float>::max();
+        }
+
+        for (int i = 0; i < k_eff; ++i)
+        {
+            results[i] = ctx.heap[i].second;
+            distances_sq[i] = ctx.heap[i].first;
         }
     }
 
