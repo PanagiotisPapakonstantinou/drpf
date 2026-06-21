@@ -7,28 +7,25 @@ typedef struct cublasContext *cublasHandle_t;
 
 struct __half;
 
-struct alignas(16) GPUNode
+struct GPUNode
 {
-    union
-    {
-        float split_val;    // Used if internal node
-        int leaf_start_idx; // Used if leaf node
-    };
-    union
-    {
-        int split_dim; // Used if internal node
-        int leaf_size; // Used if leaf node
-    };
-
+    float split_val;
     int left_child;
-    int right_child;
+};
+
+struct GPULeafInfo
+{
+    int leaf_start_idx;
+    int leaf_size;
 };
 
 struct FlattenedForest
 {
     const GPUNode *nodes;
+    const GPULeafInfo *leaf_info;
     const unsigned int *leaf_data;
     const int *tree_roots;
+    const int *tree_offsets;
     int num_nodes;
     int num_leaf_data;
     int num_trees;
@@ -37,13 +34,14 @@ struct FlattenedForest
 // Lives on the CPU but owns GPU resources.
 struct GPUDataHandle
 {
-    // Index data (allocated once in setup_gpu_backend)
     float *d_full_dataset = nullptr;
     __half *d_full_dataset_h16 = nullptr;
     float *d_norms = nullptr;
     GPUNode *d_nodes = nullptr;
+    GPULeafInfo *d_leaf_info = nullptr;
     unsigned int *d_leaf_data = nullptr;
     int *d_tree_roots = nullptr;
+    int *d_tree_offsets = nullptr;
     float *d_projection_matrix = nullptr;
 
     long rows = 0;
@@ -82,7 +80,7 @@ GPUDataHandle setup_gpu_backend(
 //    If n_queries > handle.max_batch, processes in chunks.
 void search_gpu_batch(
     GPUDataHandle &handle,
-    const float *queries, int n_queries, int dim, int k,
+    const float *queries, int n_queries, int dim, int votes, int k,
     int *out_indices, float *out_distances);
 
 // Computes the random projections via cuBLAS and the squared L2 norms via custom kernel

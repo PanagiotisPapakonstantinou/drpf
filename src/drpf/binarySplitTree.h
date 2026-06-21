@@ -25,29 +25,27 @@
 #endif
 
 /**
- * @brief Represents a single node in the binary split tree.
+ * @brief 16-byte aligned routing node. Perfectly fits 4 nodes per 64-byte cache line.
+ * Contains ONLY the data needed during tree traversal.
  */
-class Node
+struct RoutingNode
 {
-public:
+    float splitValue;
+    int32_t left;
+};
+
+/**
+ * @brief Cold data used only during construction and at the final leaf.
+ */
+struct LeafData
+{
     uint32_t start;
     uint32_t end;
     uint32_t key;
-
     int32_t parent;
-    int32_t left;
-    int32_t right;
-
-    float splitValue;
     uint16_t depth;
-    bool is_leaf;
-
-    ~Node() = default;
 
     uint32_t getSize() const { return end - start; }
-
-    Node(int key, int start, int end, int depth = 0, bool is_leaf = false)
-        : start(start), end(end), key(key), parent(-1), left(-1), right(-1), splitValue(0), depth(depth), is_leaf(is_leaf) {}
 };
 
 /**
@@ -60,7 +58,9 @@ class BinarySplitTreeBase
 protected:
     const Eigen::Ref<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> rndm_projections;
     std::vector<uint32_t> indices;
-    std::vector<Node> nodePool;
+
+    std::vector<RoutingNode> routingPool;
+    std::vector<LeafData> leafDataPool;
 
     int root_idx;
     int treeIndex;
@@ -75,8 +75,13 @@ protected:
 
     int allocNode(int key, int start, int end, int depth = 0, bool is_leaf = false)
     {
-        nodePool.emplace_back(key, start, end, depth, is_leaf);
-        return static_cast<int>(nodePool.size() - 1);
+        RoutingNode rNode = {0.0f, -1};
+        LeafData lData = {static_cast<uint32_t>(start), static_cast<uint32_t>(end), static_cast<uint32_t>(key), -1, static_cast<uint16_t>(depth)};
+
+        routingPool.push_back(rNode);
+        leafDataPool.push_back(lData);
+
+        return static_cast<int>(routingPool.size() - 1);
     }
 
     void deleteSubtree(int node_idx)
@@ -84,25 +89,29 @@ protected:
         if (node_idx == -1)
             return;
 
-        Node &node = nodePool[node_idx];
-        deleteSubtree(node.left);
-        deleteSubtree(node.right);
+        RoutingNode &rNode = routingPool[node_idx];
+        LeafData &lData = leafDataPool[node_idx];
 
-        if (node.parent != -1)
+        if (rNode.left != -1)
         {
-            Node &parent = nodePool[node.parent];
-            if (parent.left == node_idx)
-                parent.left = -1;
-            else if (parent.right == node_idx)
-                parent.right = -1;
+            deleteSubtree(rNode.left);
+            deleteSubtree(rNode.left + 1);
         }
 
-        if (node_idx == 0)
+        if (lData.parent != -1)
+        {
+            RoutingNode &parentR = routingPool[lData.parent];
+            if (parentR.left == node_idx || (parentR.left + 1) == node_idx)
+            {
+                parentR.left = -1;
+            }
+        }
+
+        if (node_idx == root_idx)
             root_idx = -1;
 
-        node.left = -1;
-        node.right = -1;
-        node.parent = -1;
+        rNode.left = -1;
+        lData.parent = -1;
     }
 
     virtual void splitNode(int node_idx) = 0;
@@ -114,7 +123,8 @@ public:
           splitDepth(split_depth), offset(treeIndex * (treeDepth + 1)), keyCounter(0), search_space(search_space)
     {
         int max_nodes = (1 << (treeDepth + 1)) - 1;
-        nodePool.reserve(max_nodes);
+        routingPool.reserve(max_nodes);
+        leafDataPool.reserve(max_nodes);
 
         indices.resize(rndm_projections.rows());
         std::iota(indices.begin(), indices.end(), 0);
@@ -134,14 +144,12 @@ public:
         const_cast<int &>(this->treeDepth) = new_depth;
     }
 
-    const std::vector<Node> &getNodePool() const { return nodePool; }
-
+    const std::vector<RoutingNode> &getRoutingPool() const { return routingPool; }
+    const std::vector<LeafData> &getLeafDataPool() const { return leafDataPool; }
     const std::vector<uint32_t> &getIndices() const { return indices; }
 
     int getRootIndex() const { return root_idx; }
-
     int getOffset() const { return offset; }
-
     int getMaxLeafSize() const { return max_leaf_size; }
 
     void initialiseRoot(int key, int start, int end)
@@ -151,42 +159,43 @@ public:
         root_idx = allocNode(key, start, end);
     }
 
-    void insertNodeAt(int parent_idx, int node_idx)
+    std::pair<int, int> allocChildren(int parent_idx, int left_key, int left_start, int left_end,
+                                      int right_key, int right_start, int right_end)
     {
-        Node &parent = nodePool[parent_idx];
-        Node &node = nodePool[node_idx];
+        RoutingNode &parentR = routingPool[parent_idx];
 
-        if (parent.left == -1)
-            parent.left = node_idx;
-        else if (parent.right == -1)
-            parent.right = node_idx;
-        else
-            throw std::runtime_error("Both child positions are already occupied");
+        int depth = leafDataPool[parent_idx].depth + 1;
 
-        node.parent = parent_idx;
-        node.depth = parent.depth + 1;
+        int left_idx = allocNode(left_key, left_start, left_end, depth);
+        int right_idx = allocNode(right_key, right_start, right_end, depth);
+
+        parentR.left = left_idx;
+
+        leafDataPool[left_idx].parent = parent_idx;
+        leafDataPool[right_idx].parent = parent_idx;
+
+        return {left_idx, right_idx};
     }
 
     void printTree(int node_idx, std::string prefix = "", bool isLast = true)
     {
         if (node_idx == -1)
             return;
-        Node &node = nodePool[node_idx];
+
+        RoutingNode &rNode = routingPool[node_idx];
+        LeafData &lData = leafDataPool[node_idx];
 
         if (node_idx == root_idx)
-            std::cout << "   " << node.key << '\n';
+            std::cout << "   " << lData.key << '\n';
         else
-        {
-            std::cout << prefix << "|___" << node.key << '\n';
-        }
+            std::cout << prefix << "|___" << lData.key << '\n';
 
         std::string newPrefix = prefix + (isLast ? "   " : "|   ");
-        if (node.left != -1 || node.right != -1)
+
+        if (rNode.left != -1)
         {
-            if (node.left != -1)
-                printTree(node.left, newPrefix, node.right == -1);
-            if (node.right != -1)
-                printTree(node.right, newPrefix, true);
+            printTree(rNode.left, newPrefix, false);
+            printTree(rNode.left + 1, newPrefix, true);
         }
     }
 
@@ -204,16 +213,14 @@ public:
             int curr = stack.back();
             stack.pop_back();
 
-            const Node &node = nodePool[curr];
+            const RoutingNode &rNode = routingPool[curr];
 
-            if (node.left == -1 && node.right == -1)
-                sizes.push_back(node.getSize());
+            if (rNode.left == -1)
+                sizes.push_back(leafDataPool[curr].getSize());
             else
             {
-                if (node.right != -1)
-                    stack.push_back(node.right);
-                if (node.left != -1)
-                    stack.push_back(node.left);
+                stack.push_back(rNode.left + 1);
+                stack.push_back(rNode.left);
             }
         }
     }
@@ -225,7 +232,8 @@ public:
         else
             splitTreeBag(root_idx);
 
-        nodePool.shrink_to_fit();
+        routingPool.shrink_to_fit();
+        leafDataPool.shrink_to_fit();
         return true_depth;
     }
 
@@ -233,7 +241,7 @@ public:
     {
         std::vector<int> current_leaves;
         current_leaves.push_back(root_idx);
-        float threshold = search_space * 1.47;
+        float threshold = search_space * 1.47f;
 
         for (int i = 1; i < treeDepth; ++i)
         {
@@ -242,28 +250,27 @@ public:
 
             for (int curr_idx : current_leaves)
             {
-                if (nodePool[curr_idx].getSize() >= threshold)
+                if (leafDataPool[curr_idx].getSize() >= threshold)
                 {
                     splitNode(curr_idx);
-                    Node &updatedNode = nodePool[curr_idx];
+                    RoutingNode &rNode = routingPool[curr_idx];
 
-                    if (updatedNode.left != -1 && updatedNode.right != -1)
+                    if (rNode.left != -1)
                     {
                         stop = false;
-                        next_leaves.push_back(updatedNode.left);
-                        next_leaves.push_back(updatedNode.right);
+                        next_leaves.push_back(rNode.left);
+                        next_leaves.push_back(rNode.left + 1);
                     }
                     else
                     {
-                        updatedNode.is_leaf = true;
-                        true_depth = std::max(true_depth, (int)updatedNode.depth);
-                        max_leaf_size = std::max(max_leaf_size, (int)updatedNode.getSize());
+                        true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
+                        max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
                     }
                 }
                 else
                 {
-                    true_depth = std::max(true_depth, (int)nodePool[curr_idx].depth);
-                    max_leaf_size = std::max(max_leaf_size, (int)nodePool[curr_idx].getSize());
+                    true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
+                    max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
                 }
             }
 
@@ -274,9 +281,8 @@ public:
 
         for (int curr_idx : current_leaves)
         {
-            Node &node = nodePool[curr_idx];
-            true_depth = std::max(true_depth, (int)node.depth);
-            max_leaf_size = std::max(max_leaf_size, (int)node.getSize());
+            true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
+            max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
         }
     }
 
@@ -295,72 +301,56 @@ public:
             int curr_idx = st.back();
             st.pop_back();
 
-            if (nodePool[curr_idx].getSize() <= target_leaf_size)
+            if (leafDataPool[curr_idx].getSize() <= target_leaf_size)
             {
-                nodePool[curr_idx].is_leaf = true;
-                true_depth = std::max(true_depth, (int)nodePool[curr_idx].depth);
-                max_leaf_size = std::max(max_leaf_size, (int)nodePool[curr_idx].getSize());
+                true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
+                max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
                 continue;
             }
 
             splitNode(curr_idx);
-            Node &node = nodePool[curr_idx];
+            RoutingNode &rNode = routingPool[curr_idx];
 
-            if (node.right != -1 && node.left != -1)
+            if (rNode.left != -1)
             {
-                st.push_back(node.right);
-                st.push_back(node.left);
+                st.push_back(rNode.left + 1);
+                st.push_back(rNode.left);
             }
             else
             {
-                true_depth = std::max(true_depth, (int)node.depth);
-                max_leaf_size = std::max(max_leaf_size, (int)node.getSize());
+                true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
+                max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
             }
         }
     }
 
-    FORCE_INLINE Node &findLeafForQuery(const float *__restrict q)
+    FORCE_INLINE int findLeafIdxForQuery(const float *__restrict q) const
     {
         int idx = root_idx;
-        Node *__restrict nodes = nodePool.data();
-        const int baseOffset = offset;
+        const RoutingNode *__restrict nodes = routingPool.data();
 
-        for (;;)
+        int current_depth = 0;
+
+        while (nodes[idx].left != -1)
         {
-            Node &cur = nodes[idx];
+            const RoutingNode &cur = nodes[idx];
 
-            const int left = cur.left;
-            const int right = cur.right;
-            if (left == -1 && right == -1)
-                return cur;
+            __builtin_prefetch(&nodes[cur.left], 0, 3);
 
-            const int d = cur.depth;
-            const float splitValue = cur.splitValue;
+            const float v = q[offset + current_depth];
 
-            const float v = static_cast<float>(static_cast<Scalar>(q[baseOffset + d]));
+            idx = cur.left + (v >= cur.splitValue);
 
-            const int preferred_idx = (v < splitValue) ? left : right;
-            const int other_idx = (v < splitValue) ? right : left;
-
-            if (preferred_idx != -1)
-            {
-                idx = preferred_idx;
-                continue;
-            }
-
-            if (other_idx != -1)
-            {
-                idx = other_idx;
-                continue;
-            }
-
-            return cur;
+            current_depth++;
         }
+
+        return idx;
     }
 
-    inline std::span<const unsigned int> getLeafIndices(const float *__restrict projectedQuery) noexcept
+    inline std::span<const uint32_t> getLeafIndices(const float *__restrict projectedQuery) const noexcept
     {
-        Node &leaf = findLeafForQuery(projectedQuery);
+        int leaf_idx = findLeafIdxForQuery(projectedQuery);
+        const LeafData &leaf = leafDataPool[leaf_idx];
         return {indices.data() + leaf.start, leaf.getSize()};
     }
 };

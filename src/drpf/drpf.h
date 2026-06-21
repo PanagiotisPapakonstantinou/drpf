@@ -43,9 +43,9 @@ private:
 protected:
     void splitNode(int node_idx) override
     {
-        uint32_t node_start = this->nodePool[node_idx].start;
-        uint32_t node_end = this->nodePool[node_idx].end;
-        uint16_t node_depth = this->nodePool[node_idx].depth;
+        uint32_t node_start = this->leafDataPool[node_idx].start;
+        uint32_t node_end = this->leafDataPool[node_idx].end;
+        uint16_t node_depth = this->leafDataPool[node_idx].depth;
 
         int size = node_end - node_start;
         if (size <= 1)
@@ -80,7 +80,7 @@ protected:
             split_value = kde_result.value();
         }
 
-        this->nodePool[node_idx].splitValue = split_value;
+        this->routingPool[node_idx].splitValue = split_value;
 
         auto partitionPoint = std::partition(
             this->indices.begin() + node_start,
@@ -107,17 +107,14 @@ protected:
 
             mid = static_cast<int>(m);
             split_value = static_cast<float>(col_ptr[this->indices[mid]]);
-            this->nodePool[node_idx].splitValue = split_value;
+
+            this->routingPool[node_idx].splitValue = split_value;
         }
 
         int leftKey = ++(this->keyCounter);
         int rightKey = ++(this->keyCounter);
 
-        int leftIdx = this->allocNode(leftKey, node_start, mid);
-        int rightIdx = this->allocNode(rightKey, mid, node_end);
-
-        this->insertNodeAt(node_idx, leftIdx);
-        this->insertNodeAt(node_idx, rightIdx);
+        this->allocChildren(node_idx, leftKey, node_start, mid, rightKey, mid, node_end);
     }
 
 public:
@@ -144,7 +141,6 @@ public:
         return result_depth;
     }
 };
-
 #include "drpf_backend.h"
 
 /**
@@ -432,13 +428,13 @@ public:
         return indices;
     }
 
-    ANNResult ann_batch(const float *queries, int n_queries, int dim, int k)
+    ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k)
     {
-        return backend->ann_batch(queries, n_queries, dim, k);
+        return backend->ann_batch(queries, n_queries, dim, votes, k);
     }
 
-    ANNResult ann(const float *query_ptr, std::size_t length, int k)
+    ANNResult ann(const float *query_ptr, std::size_t length, int votes, int k)
     {
-        return backend->ann(query_ptr, static_cast<int>(length), k);
+        return backend->ann(query_ptr, static_cast<int>(length), votes, k);
     }
 };

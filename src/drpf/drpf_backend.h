@@ -45,9 +45,9 @@ public:
 
     virtual ~DrpfBackend() = default;
 
-    virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, int k) = 0;
+    virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) = 0;
 
-    virtual ANNResult ann(const float *query, int dim, int k) = 0;
+    virtual ANNResult ann(const float *query, int dim, int votes, int k) = 0;
 };
 
 class DRPFBackendCPU : public DrpfBackend
@@ -64,21 +64,23 @@ private:
 
     struct SearchContext
     {
+        std::vector<uint32_t> state;
         std::vector<int> candidates;
-        std::vector<uint32_t> seen;
         uint32_t generation = 0;
         std::vector<std::pair<float, int>> heap;
 
         void resize(int rows, int max_candidates, int k)
         {
-            if (seen.size() != rows)
+            if (state.size() != static_cast<size_t>(rows))
             {
-                seen.assign(rows, 0);
+                state.assign(rows, 0);
                 generation = 0;
             }
-            if (candidates.capacity() < max_candidates)
+
+            if (candidates.capacity() < static_cast<size_t>(max_candidates))
                 candidates.reserve(max_candidates);
-            if (heap.capacity() < k + 1)
+
+            if (heap.capacity() < static_cast<size_t>(k + 1))
                 heap.reserve(k + 1);
         }
     };
@@ -90,19 +92,27 @@ private:
         int k,
         int *results,
         float *distances_sq,
-        SearchContext &ctx)
+        SearchContext &ctx, int votes)
     {
         int rows = static_cast<int>(data.rows());
         ctx.resize(rows, max_search_buffer_size, k);
 
         ctx.generation++;
-        if (ctx.generation == 0)
+        if (ctx.generation >= (1 << 24))
         {
-            std::fill(ctx.seen.begin(), ctx.seen.end(), 0);
+            std::fill(ctx.state.begin(), ctx.state.end(), 0);
             ctx.generation = 1;
         }
 
         ctx.candidates.clear();
+
+        int *cands_ptr = ctx.candidates.data();
+        int num_cands = 0;
+
+        uint32_t gen_mask = ctx.generation << 8;
+        uint32_t target_votes = static_cast<uint32_t>(std::max(1, votes));
+
+        const int prefetch_dist = 32;
 
         for (int i = 0; i < numTrees; i++)
         {
@@ -112,17 +122,29 @@ private:
 
             for (size_t j = 0; j < leaf_size; ++j)
             {
-                int idx = leaf_ptr[j];
-                if (ctx.seen[idx] != ctx.generation)
+
+                if (j + prefetch_dist < leaf_size)
                 {
-                    ctx.seen[idx] = ctx.generation;
-                    ctx.candidates.push_back(idx);
+                    PREFETCH(&ctx.state[leaf_ptr[j + prefetch_dist]]);
+                }
+
+                int idx = leaf_ptr[j];
+                uint32_t current_state = ctx.state[idx];
+
+                uint32_t is_same_gen = ((current_state >> 8) == ctx.generation);
+
+                uint32_t new_votes = ((current_state & 0xFF) * is_same_gen) + 1;
+
+                ctx.state[idx] = gen_mask | new_votes;
+
+                if (new_votes == target_votes)
+                {
+                    cands_ptr[num_cands++] = idx;
                 }
             }
         }
 
-        size_t n_cands = ctx.candidates.size();
-        if (n_cands == 0)
+        if (num_cands == 0)
         {
             std::fill(results, results + k, -1);
             std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
@@ -133,20 +155,19 @@ private:
         float q_norm_sqrt = std::sqrt(q_norm);
         int dim = static_cast<int>(data.cols());
         const float *data_raw = data.data();
-        const int prefetch_dist = 32;
 
         ctx.heap.clear();
         float heap_worst = std::numeric_limits<float>::max();
 
-        for (size_t i = 0; i < n_cands; ++i)
+        for (size_t i = 0; i < num_cands; ++i)
         {
-            if (i + prefetch_dist < n_cands)
+            if (i + prefetch_dist < num_cands)
             {
-                int next_idx = ctx.candidates[i + prefetch_dist];
+                int next_idx = cands_ptr[i + prefetch_dist];
                 PREFETCH(data_raw + static_cast<size_t>(next_idx) * dim);
             }
 
-            int idx = ctx.candidates[i];
+            int idx = cands_ptr[i];
 
             // Cauchy-Schwarz lower bound: dist >= (||x|| - ||q||)^2
             float x_norm_sqrt = std::sqrt((*norms)[idx]);
@@ -202,7 +223,7 @@ public:
           projectionMatrix(projMatrix), norms(nrms), forest(f),
           numTrees(trees), max_search_buffer_size(max_buffer) {}
 
-    ANNResult ann(const float *query, int dim, int k) override
+    ANNResult ann(const float *query, int dim, int votes, int k) override
     {
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
         if (dim != data.cols())
@@ -220,12 +241,12 @@ public:
         this->exact_ann(data, q, projectedQuery.data(), k,
                         out.indices.data(),
                         out.distances_sq.data(),
-                        ctx);
+                        ctx, votes);
 
         return out;
     }
 
-    ANNResult ann_batch(const float *queries, int n_queries, int dim, int k) override
+    ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) override
     {
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
         if (dim != data.cols())
@@ -253,7 +274,7 @@ public:
                 this->exact_ann(data, q, proj_q, k,
                                 &out.indices[i * k],
                                 &out.distances_sq[i * k],
-                                ctx);
+                                ctx, votes);
             }
         }
 
@@ -273,83 +294,68 @@ private:
 
     using TreeType = KdeBinarySplitTree<Eigen::half>;
 
-    int flatten(const TreeType *tree,
-                int root_cpu_idx,
-                int tree_offset,
-                int proj_cols_per_tree,
-                std::vector<GPUNode> &flat_nodes,
-                std::vector<unsigned int> &flat_leaf_data)
+int flatten(const TreeType *tree,
+            int root_cpu_idx,
+            std::vector<GPUNode> &flat_nodes,
+            std::vector<GPULeafInfo> &flat_leaf_info,
+            std::vector<unsigned int> &flat_leaf_data)
+{
+    if (root_cpu_idx == -1)
+        return -1;
+
+    const auto &routingPool = tree->getRoutingPool();
+    const auto &leafDataPool = tree->getLeafDataPool();
+    const auto &global_indices = tree->getIndices();
+
+    int root_flat_idx = static_cast<int>(flat_nodes.size());
+    flat_nodes.emplace_back();
+    flat_leaf_info.emplace_back();
+
+    std::queue<std::pair<int, int>> q;
+    q.push({root_cpu_idx, root_flat_idx});
+
+    while (!q.empty())
     {
-        if (root_cpu_idx == -1)
-            return -1;
+        auto [curr_cpu_idx, curr_flat_idx] = q.front();
+        q.pop();
 
-        const auto &pool = tree->getNodePool();
-        const auto &global_indices = tree->getIndices();
+        const RoutingNode &cpu_rnode = routingPool[curr_cpu_idx];
+        GPUNode gpu_node{};
+        GPULeafInfo leaf_info{-1, 0};
 
-        int root_flat_idx = static_cast<int>(flat_nodes.size());
-        flat_nodes.emplace_back();
-
-        std::queue<std::pair<int, int>> q;
-        q.push({root_cpu_idx, root_flat_idx});
-
-        while (!q.empty())
+        if (cpu_rnode.left == -1)
         {
-            auto [curr_cpu_idx, curr_flat_idx] = q.front();
-            q.pop();
+            const LeafData &cpu_ldata = leafDataPool[curr_cpu_idx];
+            gpu_node.left_child = -1;
 
-            const auto &cpu_node = pool[curr_cpu_idx];
-            GPUNode gpu_node;
+            leaf_info.leaf_start_idx = static_cast<int>(flat_leaf_data.size());
+            leaf_info.leaf_size = static_cast<int>(cpu_ldata.getSize());
 
-            if (cpu_node.is_leaf)
-            {
-                gpu_node.left_child = -1;
-                gpu_node.right_child = -1;
+            for (uint32_t i = cpu_ldata.start; i < cpu_ldata.end; ++i)
+                flat_leaf_data.push_back(global_indices[i]);
+        }
+        else
+        {
+            gpu_node.split_val = cpu_rnode.splitValue;
 
-                gpu_node.leaf_start_idx = static_cast<int>(flat_leaf_data.size());
-                gpu_node.leaf_size = static_cast<int>(cpu_node.getSize());
+            int left_flat_idx = static_cast<int>(flat_nodes.size());
+            flat_nodes.emplace_back();
+            flat_leaf_info.emplace_back();
+            gpu_node.left_child = left_flat_idx;
+            q.push({cpu_rnode.left, left_flat_idx});
 
-                for (uint32_t i = cpu_node.start; i < cpu_node.end; ++i)
-                {
-                    flat_leaf_data.push_back(global_indices[i]);
-                }
-            }
-            else
-            {
-                int local_col = cpu_node.depth % proj_cols_per_tree;
-
-                gpu_node.split_dim = tree_offset + local_col;
-                gpu_node.split_val = cpu_node.splitValue;
-
-                if (cpu_node.left != -1)
-                {
-                    int left_flat_idx = static_cast<int>(flat_nodes.size());
-                    flat_nodes.emplace_back();
-                    gpu_node.left_child = left_flat_idx;
-                    q.push({cpu_node.left, left_flat_idx});
-                }
-                else
-                {
-                    gpu_node.left_child = -1;
-                }
-
-                if (cpu_node.right != -1)
-                {
-                    int right_flat_idx = static_cast<int>(flat_nodes.size());
-                    flat_nodes.emplace_back();
-                    gpu_node.right_child = right_flat_idx;
-                    q.push({cpu_node.right, right_flat_idx});
-                }
-                else
-                {
-                    gpu_node.right_child = -1;
-                }
-            }
-
-            flat_nodes[curr_flat_idx] = gpu_node;
+            int right_flat_idx = static_cast<int>(flat_nodes.size());
+            flat_nodes.emplace_back();
+            flat_leaf_info.emplace_back();
+            q.push({cpu_rnode.left + 1, right_flat_idx});
         }
 
-        return root_flat_idx;
+        flat_nodes[curr_flat_idx] = gpu_node;
+        flat_leaf_info[curr_flat_idx] = leaf_info;
     }
+
+    return root_flat_idx;
+}
 
 public:
     DRPFBackendGPU(
@@ -361,23 +367,27 @@ public:
         : _dim(cols)
     {
         std::vector<GPUNode> flat_nodes;
+        std::vector<GPULeafInfo> flat_leaf_info;
         std::vector<unsigned int> flat_leaf_data;
         std::vector<int> tree_roots;
+        std::vector<int> tree_offsets; 
 
         int proj_cols_per_tree = (int)proj_matrix->cols() / (int)cpu_forest.size();
         for (const auto &tree : cpu_forest)
         {
             int tree_offset = tree->getOffset();
             int root_idx = flatten(tree.get(), tree->getRootIndex(),
-                                   tree_offset, proj_cols_per_tree,
-                                   flat_nodes, flat_leaf_data);
+                       flat_nodes, flat_leaf_info, flat_leaf_data);
             tree_roots.push_back(root_idx);
+            tree_offsets.push_back(tree_offset);
         }
 
         FlattenedForest ff;
         ff.nodes = flat_nodes.data();
+        ff.leaf_info = flat_leaf_info.data();
         ff.leaf_data = flat_leaf_data.data();
         ff.tree_roots = tree_roots.data();
+        ff.tree_offsets = tree_offsets.data();
         ff.num_nodes = (int)flat_nodes.size();
         ff.num_leaf_data = (int)flat_leaf_data.size();
         ff.num_trees = (int)tree_roots.size();
@@ -399,23 +409,23 @@ public:
         free_gpu_handle(_h);
     }
 
-    ANNResult ann(const float *query, int dim, int k) override
+    ANNResult ann(const float *query, int dim, int votes, int k) override
     {
-        return _cpu_fallback->ann(query, dim, k);
+        return _cpu_fallback->ann(query, dim, votes, k);
     }
 
-    ANNResult ann_batch(const float *queries, int n_queries, int dim, int k) override
+    ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) override
     {
         constexpr int GPU_CROSSOVER = 64;
         if (n_queries < GPU_CROSSOVER)
         {
-            return _cpu_fallback->ann_batch(queries, n_queries, dim, k);
+            return _cpu_fallback->ann_batch(queries, n_queries, dim, votes, k);
         }
 
         ANNResult out;
         out.indices.resize(n_queries * k);
         out.distances_sq.resize(n_queries * k);
-        search_gpu_batch(_h, queries, n_queries, dim, k,
+        search_gpu_batch(_h, queries, n_queries, dim, votes, k,
                          out.indices.data(), out.distances_sq.data());
         return out;
     }

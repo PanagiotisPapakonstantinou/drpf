@@ -38,15 +38,34 @@ __global__ void float_to_half_kernel(const float *src, __half *dst, size_t n)
         dst[i] = __float2half(src[i]);
 }
 
+__device__ __forceinline__ bool record_vote(uint32_t *state_ptr, uint32_t generation, uint32_t target_votes)
+{
+    uint32_t old_val = *state_ptr;
+    while (true)
+    {
+        uint32_t old_gen = old_val >> 8;
+        uint32_t old_votes = old_val & 0xFFu;
+        uint32_t votes = (old_gen == generation) ? (old_votes + 1) : 1u;
+        uint32_t new_val = (generation << 8) | votes;
+
+        uint32_t prev = atomicCAS(state_ptr, old_val, new_val);
+        if (prev == old_val)
+            return votes == target_votes;
+        old_val = prev;
+    }
+}
+
 __global__ void traverse_trees_kernel(
     const float *__restrict__ d_proj_query,
     const GPUNode *__restrict__ d_nodes,
+    const GPULeafInfo *__restrict__ d_leaf_info,
     const unsigned int *__restrict__ d_leaf_data,
     const int *__restrict__ d_tree_roots,
+    const int *__restrict__ d_tree_offsets,
     int num_trees, int proj_cols, int max_search_buffer_size,
     int *__restrict__ d_cand_buf,
     int *__restrict__ d_num_candidates,
-    uint32_t *__restrict__ d_seen, uint32_t generation,
+    uint32_t *__restrict__ d_state, uint32_t generation, uint32_t target_votes,
     int rows_total)
 {
     const int tid = threadIdx.x;
@@ -65,24 +84,24 @@ __global__ void traverse_trees_kernel(
         s_num_candidates = 0;
     __syncthreads();
 
-    // ---- Phase 1: each thread walks one or more trees ----
     for (int t = tid; t < num_trees; t += blockDim.x)
     {
         int curr = d_tree_roots[t];
+        const int tree_offset = d_tree_offsets[t];
+        int depth = 0;
+
         while (d_nodes[curr].left_child != -1)
         {
-            float qv = proj_q[d_nodes[curr].split_dim];
-            curr = (qv < d_nodes[curr].split_val)
-                       ? d_nodes[curr].left_child
-                       : d_nodes[curr].right_child;
+            float qv = proj_q[tree_offset + depth];
+            curr = d_nodes[curr].left_child + (qv >= d_nodes[curr].split_val);
+            depth++;
         }
-        s_leaf_start[t] = d_nodes[curr].leaf_start_idx;
-        s_leaf_size[t] = d_nodes[curr].leaf_size;
+        s_leaf_start[t] = d_leaf_info[curr].leaf_start_idx;
+        s_leaf_size[t] = d_leaf_info[curr].leaf_size;
     }
     __syncthreads();
 
-    // ---- Phase 2: all threads cooperatively read + dedup each leaf ----
-    uint32_t *seen = d_seen + (size_t)q_idx * rows_total;
+    uint32_t *state = d_state + (size_t)q_idx * rows_total;
 
     for (int t = 0; t < num_trees; ++t)
     {
@@ -92,7 +111,7 @@ __global__ void traverse_trees_kernel(
         for (int i = tid; i < size; i += blockDim.x)
         {
             int cid = (int)d_leaf_data[start + i];
-            if (atomicExch(&seen[cid], generation) != generation)
+            if (record_vote(&state[cid], generation, target_votes))
             {
                 int pos = atomicAdd(&s_num_candidates, 1);
                 if (pos < max_search_buffer_size)
@@ -106,7 +125,6 @@ __global__ void traverse_trees_kernel(
         d_num_candidates[q_idx] = min(s_num_candidates, max_search_buffer_size);
 }
 
-// ============================================================================
 
 #define DRPF_BLOCK_SIZE 256
 
@@ -334,14 +352,23 @@ GPUDataHandle setup_gpu_backend(
                               forest.num_nodes * sizeof(GPUNode),
                               cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&h.d_leaf_data,
-                              forest.num_leaf_data * sizeof(unsigned int)));
+        CUDA_CHECK(cudaMalloc(&h.d_leaf_info, forest.num_nodes * sizeof(GPULeafInfo)));
+        CUDA_CHECK(cudaMemcpy(h.d_leaf_info, forest.leaf_info,
+                              forest.num_nodes * sizeof(GPULeafInfo),
+                              cudaMemcpyHostToDevice));
+
+        CUDA_CHECK(cudaMalloc(&h.d_leaf_data, forest.num_leaf_data * sizeof(unsigned int)));
         CUDA_CHECK(cudaMemcpy(h.d_leaf_data, forest.leaf_data,
                               forest.num_leaf_data * sizeof(unsigned int),
                               cudaMemcpyHostToDevice));
 
         CUDA_CHECK(cudaMalloc(&h.d_tree_roots, forest.num_trees * sizeof(int)));
         CUDA_CHECK(cudaMemcpy(h.d_tree_roots, forest.tree_roots,
+                              forest.num_trees * sizeof(int),
+                              cudaMemcpyHostToDevice));
+
+        CUDA_CHECK(cudaMalloc(&h.d_tree_offsets, forest.num_trees * sizeof(int)));
+        CUDA_CHECK(cudaMemcpy(h.d_tree_offsets, forest.tree_offsets,
                               forest.num_trees * sizeof(int),
                               cudaMemcpyHostToDevice));
     }
@@ -371,19 +398,21 @@ GPUDataHandle setup_gpu_backend(
 }
 
 static void search_chunk(GPUDataHandle &h,
-                         const float *queries, int n_queries, int dim, int k,
+                         const float *queries, int n_queries, int dim, int votes, int k,
                          int *out_indices, float *out_distances)
 {
     if (k > h.max_k)
         throw std::runtime_error("k exceeds GPU handle max_k");
 
     h.generation++;
-    if (h.generation == 0)
+    if (h.generation >= (1u << 24))
     {
         CUDA_CHECK(cudaMemset(h.d_seen, 0,
                               (size_t)h.max_batch * h.rows * sizeof(uint32_t)));
         h.generation = 1;
     }
+
+    uint32_t target_votes = (uint32_t)max(1, votes);
 
     CUDA_CHECK(cudaMemcpy(h.d_queries, queries,
                           (size_t)n_queries * dim * sizeof(float), cudaMemcpyHostToDevice));
@@ -395,13 +424,12 @@ static void search_chunk(GPUDataHandle &h,
                              h.d_queries, (int)h.cols,
                              &beta, h.d_projected_queries, h.proj_cols));
 
-    // Launch 1: traverse — fills d_cand_buf + d_num_candidates
     traverse_trees_kernel<<<n_queries, DRPF_BLOCK_SIZE>>>(
         h.d_projected_queries,
-        h.d_nodes, h.d_leaf_data, h.d_tree_roots,
+        h.d_nodes, h.d_leaf_info, h.d_leaf_data, h.d_tree_roots, h.d_tree_offsets,
         h.num_trees, h.proj_cols, h.max_buf,
         h.d_cand_buf, h.d_num_candidates,
-        h.d_seen, h.generation, (int)h.rows);
+        h.d_seen, h.generation, target_votes, (int)h.rows);
     CUDA_CHECK(cudaGetLastError());
 
     size_t smem = (size_t)h.cols * sizeof(float);
@@ -418,12 +446,10 @@ static void search_chunk(GPUDataHandle &h,
                           (size_t)n_queries * k * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-// ============================================================================
-// Public batch entry: chunks if n_queries > max_batch.
-// ============================================================================
+
 void search_gpu_batch(
     GPUDataHandle &h,
-    const float *queries, int n_queries, int dim, int k,
+    const float *queries, int n_queries, int dim, int votes, int k,
     int *out_indices, float *out_distances)
 {
     int offset = 0;
@@ -433,7 +459,7 @@ void search_gpu_batch(
         search_chunk(
             h,
             queries + (size_t)offset * dim,
-            chunk, dim, k,
+            chunk, dim, votes, k,
             out_indices + (size_t)offset * k,
             out_distances + (size_t)offset * k);
         offset += chunk;
@@ -473,6 +499,11 @@ void free_gpu_handle(GPUDataHandle &h)
         cudaFree(h.d_tree_roots);
     if (h.d_seen)
         cudaFree(h.d_seen);
+
+    if (h.d_leaf_info)
+        cudaFree(h.d_leaf_info);
+    if (h.d_tree_offsets)
+        cudaFree(h.d_tree_offsets);
 
     if (h.d_num_candidates)
         cudaFree(h.d_num_candidates);
