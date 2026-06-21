@@ -10,6 +10,12 @@
 #define FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PREFETCH(addr) __builtin_prefetch(addr)
+#else
+#define PREFETCH(addr)
+#endif
+
 #include <Eigen/Core>
 #include <Eigen/Dense>
 
