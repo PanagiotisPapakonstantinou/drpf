@@ -24,6 +24,12 @@
 #define FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PREFETCH(addr) __builtin_prefetch(addr)
+#else
+#define PREFETCH(addr)
+#endif
+
 /**
  * @brief 16-byte aligned routing node. Perfectly fits 4 nodes per 64-byte cache line.
  * Contains ONLY the data needed during tree traversal.
@@ -335,7 +341,7 @@ public:
         {
             const RoutingNode &cur = nodes[idx];
 
-            __builtin_prefetch(&nodes[cur.left], 0, 3);
+            PREFETCH(&nodes[cur.left], 0, 3);
 
             const float v = q[offset + current_depth];
 
