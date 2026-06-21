@@ -346,7 +346,7 @@ public:
         {
             const RoutingNode &cur = nodes[idx];
 
-            PREFETCH(&nodes[cur.left], 0, 3);
+            PREFETCH(&nodes[cur.left]);
 
             const float v = q[offset + current_depth];
 
