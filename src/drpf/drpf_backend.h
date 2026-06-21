@@ -10,10 +10,15 @@
 #define FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
+#ifndef PREFETCH
 #if defined(__GNUC__) || defined(__clang__)
 #define PREFETCH(addr) __builtin_prefetch(addr)
+#elif defined(_MSC_VER)
+#include <xmmintrin.h>
+#define PREFETCH(addr) _mm_prefetch(reinterpret_cast<const char *>(addr), _MM_HINT_T0)
 #else
 #define PREFETCH(addr)
+#endif
 #endif
 
 #include <Eigen/Core>
