@@ -10,12 +10,6 @@
 #define FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
-#if defined(__GNUC__) || defined(__clang__)
-#define PREFETCH(addr) __builtin_prefetch(addr)
-#else
-#define PREFETCH(addr)
-#endif
-
 #include <Eigen/Core>
 #include <Eigen/Dense>
 
@@ -294,68 +288,68 @@ private:
 
     using TreeType = KdeBinarySplitTree<Eigen::half>;
 
-int flatten(const TreeType *tree,
-            int root_cpu_idx,
-            std::vector<GPUNode> &flat_nodes,
-            std::vector<GPULeafInfo> &flat_leaf_info,
-            std::vector<unsigned int> &flat_leaf_data)
-{
-    if (root_cpu_idx == -1)
-        return -1;
-
-    const auto &routingPool = tree->getRoutingPool();
-    const auto &leafDataPool = tree->getLeafDataPool();
-    const auto &global_indices = tree->getIndices();
-
-    int root_flat_idx = static_cast<int>(flat_nodes.size());
-    flat_nodes.emplace_back();
-    flat_leaf_info.emplace_back();
-
-    std::queue<std::pair<int, int>> q;
-    q.push({root_cpu_idx, root_flat_idx});
-
-    while (!q.empty())
+    int flatten(const TreeType *tree,
+                int root_cpu_idx,
+                std::vector<GPUNode> &flat_nodes,
+                std::vector<GPULeafInfo> &flat_leaf_info,
+                std::vector<unsigned int> &flat_leaf_data)
     {
-        auto [curr_cpu_idx, curr_flat_idx] = q.front();
-        q.pop();
+        if (root_cpu_idx == -1)
+            return -1;
 
-        const RoutingNode &cpu_rnode = routingPool[curr_cpu_idx];
-        GPUNode gpu_node{};
-        GPULeafInfo leaf_info{-1, 0};
+        const auto &routingPool = tree->getRoutingPool();
+        const auto &leafDataPool = tree->getLeafDataPool();
+        const auto &global_indices = tree->getIndices();
 
-        if (cpu_rnode.left == -1)
+        int root_flat_idx = static_cast<int>(flat_nodes.size());
+        flat_nodes.emplace_back();
+        flat_leaf_info.emplace_back();
+
+        std::queue<std::pair<int, int>> q;
+        q.push({root_cpu_idx, root_flat_idx});
+
+        while (!q.empty())
         {
-            const LeafData &cpu_ldata = leafDataPool[curr_cpu_idx];
-            gpu_node.left_child = -1;
+            auto [curr_cpu_idx, curr_flat_idx] = q.front();
+            q.pop();
 
-            leaf_info.leaf_start_idx = static_cast<int>(flat_leaf_data.size());
-            leaf_info.leaf_size = static_cast<int>(cpu_ldata.getSize());
+            const RoutingNode &cpu_rnode = routingPool[curr_cpu_idx];
+            GPUNode gpu_node{};
+            GPULeafInfo leaf_info{-1, 0};
 
-            for (uint32_t i = cpu_ldata.start; i < cpu_ldata.end; ++i)
-                flat_leaf_data.push_back(global_indices[i]);
+            if (cpu_rnode.left == -1)
+            {
+                const LeafData &cpu_ldata = leafDataPool[curr_cpu_idx];
+                gpu_node.left_child = -1;
+
+                leaf_info.leaf_start_idx = static_cast<int>(flat_leaf_data.size());
+                leaf_info.leaf_size = static_cast<int>(cpu_ldata.getSize());
+
+                for (uint32_t i = cpu_ldata.start; i < cpu_ldata.end; ++i)
+                    flat_leaf_data.push_back(global_indices[i]);
+            }
+            else
+            {
+                gpu_node.split_val = cpu_rnode.splitValue;
+
+                int left_flat_idx = static_cast<int>(flat_nodes.size());
+                flat_nodes.emplace_back();
+                flat_leaf_info.emplace_back();
+                gpu_node.left_child = left_flat_idx;
+                q.push({cpu_rnode.left, left_flat_idx});
+
+                int right_flat_idx = static_cast<int>(flat_nodes.size());
+                flat_nodes.emplace_back();
+                flat_leaf_info.emplace_back();
+                q.push({cpu_rnode.left + 1, right_flat_idx});
+            }
+
+            flat_nodes[curr_flat_idx] = gpu_node;
+            flat_leaf_info[curr_flat_idx] = leaf_info;
         }
-        else
-        {
-            gpu_node.split_val = cpu_rnode.splitValue;
 
-            int left_flat_idx = static_cast<int>(flat_nodes.size());
-            flat_nodes.emplace_back();
-            flat_leaf_info.emplace_back();
-            gpu_node.left_child = left_flat_idx;
-            q.push({cpu_rnode.left, left_flat_idx});
-
-            int right_flat_idx = static_cast<int>(flat_nodes.size());
-            flat_nodes.emplace_back();
-            flat_leaf_info.emplace_back();
-            q.push({cpu_rnode.left + 1, right_flat_idx});
-        }
-
-        flat_nodes[curr_flat_idx] = gpu_node;
-        flat_leaf_info[curr_flat_idx] = leaf_info;
+        return root_flat_idx;
     }
-
-    return root_flat_idx;
-}
 
 public:
     DRPFBackendGPU(
@@ -370,14 +364,14 @@ public:
         std::vector<GPULeafInfo> flat_leaf_info;
         std::vector<unsigned int> flat_leaf_data;
         std::vector<int> tree_roots;
-        std::vector<int> tree_offsets; 
+        std::vector<int> tree_offsets;
 
         int proj_cols_per_tree = (int)proj_matrix->cols() / (int)cpu_forest.size();
         for (const auto &tree : cpu_forest)
         {
             int tree_offset = tree->getOffset();
             int root_idx = flatten(tree.get(), tree->getRootIndex(),
-                       flat_nodes, flat_leaf_info, flat_leaf_data);
+                                   flat_nodes, flat_leaf_info, flat_leaf_data);
             tree_roots.push_back(root_idx);
             tree_offsets.push_back(tree_offset);
         }
