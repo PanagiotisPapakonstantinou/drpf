@@ -111,9 +111,6 @@ private:
 
         ctx.candidates.clear();
 
-        int *cands_ptr = ctx.candidates.data();
-        int num_cands = 0;
-
         uint32_t gen_mask = ctx.generation << 8;
         uint32_t target_votes = static_cast<uint32_t>(std::max(1, votes));
 
@@ -144,10 +141,12 @@ private:
 
                 if (new_votes == target_votes)
                 {
-                    cands_ptr[num_cands++] = idx;
+                    ctx.candidates.push_back(idx);
                 }
             }
         }
+
+        int num_cands = static_cast<int>(ctx.candidates.size());
 
         if (num_cands == 0)
         {
@@ -168,11 +167,11 @@ private:
         {
             if (i + prefetch_dist < num_cands)
             {
-                int next_idx = cands_ptr[i + prefetch_dist];
+                int next_idx = ctx.candidates[i + prefetch_dist];
                 PREFETCH(data_raw + static_cast<size_t>(next_idx) * dim);
             }
 
-            int idx = cands_ptr[i];
+            int idx = ctx.candidates[i];
 
             // Cauchy-Schwarz lower bound: dist >= (||x|| - ||q||)^2
             float x_norm_sqrt = std::sqrt((*norms)[idx]);
