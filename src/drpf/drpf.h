@@ -439,11 +439,15 @@ namespace drpf
 
         ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k)
         {
+            if (votes <= 0)
+                throw std::invalid_argument("votes must be a positive integer (>= 1).");
             return backend->ann_batch(queries, n_queries, dim, votes, k);
         }
 
         ANNResult ann(const float *query_ptr, std::size_t length, int votes, int k)
         {
+            if (votes <= 0)
+                throw std::invalid_argument("votes must be a positive integer (>= 1).");
             return backend->ann(query_ptr, static_cast<int>(length), votes, k);
         }
     };

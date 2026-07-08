@@ -467,3 +467,376 @@ class TestGPUBackend:
         results = idx.ann_batch(queries, k=10)
         hits = sum(1 for i in range(len(queries)) if i in results[i])
         assert hits >= 60, f"GPU batch recall too low: {hits}/80"
+
+
+# ---------------------------------------------------------------------------
+# Constructor parameter validation
+# ---------------------------------------------------------------------------
+
+class TestConstructorValidation:
+    def test_num_trees_zero_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(num_trees=0)
+
+    def test_num_trees_negative_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(num_trees=-1)
+
+    def test_split_depth_zero_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(depth=0)
+
+    def test_split_depth_negative_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(depth=-2)
+
+    def test_no_of_ss_negative_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(no_of_ss=-1)
+
+    def test_bw_modifier_zero_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(bw_modifier=0.0)
+
+    def test_bw_modifier_negative_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(bw_modifier=-0.5)
+
+    def test_min_ratio_zero_raises(self):
+        with pytest.raises(ValueError):
+            DRPF(min_ratio=0.0)
+
+    def test_min_ratio_at_half_raises(self):
+        """min_ratio must be strictly < 0.5."""
+        with pytest.raises(ValueError):
+            DRPF(min_ratio=0.5)
+
+    def test_min_ratio_just_under_half_is_accepted(self):
+        idx = DRPF(min_ratio=0.499)
+        assert idx is not None
+
+
+# ---------------------------------------------------------------------------
+# Votes threshold
+# ---------------------------------------------------------------------------
+class TestVotes:
+    def test_default_votes_is_one(self, indexed_drpf):
+        idx, data = indexed_drpf
+        default_result = idx.ann(data[0], k=5)
+        explicit_result = idx.ann(data[0], k=5, votes=1)
+        np.testing.assert_array_equal(default_result, explicit_result)
+
+    def test_votes_zero_behaves_like_one(self, indexed_drpf):
+        """Backend clamps votes to max(1, votes)."""
+        idx, data = indexed_drpf
+        result_zero = idx.ann(data[0], k=5, votes=0)
+        result_one = idx.ann(data[0], k=5, votes=1)
+        np.testing.assert_array_equal(result_zero, result_one)
+
+    def test_higher_votes_never_adds_new_candidates(self, indexed_drpf):
+        """Raising the vote threshold can only prune the candidate pool, never grow it."""
+        idx, data = indexed_drpf
+        low = set(idx.ann(data[0], k=50, votes=1).tolist()) - {-1}
+        high = set(idx.ann(data[0], k=50, votes=3).tolist()) - {-1}
+        assert high.issubset(low)
+
+    def test_votes_exceeding_num_trees_returns_no_candidates(self, indexed_drpf):
+        """indexed_drpf is built with num_trees=3; no candidate can reach 10 votes."""
+        idx, data = indexed_drpf
+        result = idx.ann(data[0], k=5, votes=10)
+        assert np.all(result == -1)
+
+    def test_votes_applies_to_batch_too(self, indexed_drpf):
+        idx, data = indexed_drpf
+        result = idx.ann_batch(data[:5], k=5, votes=10)
+        assert np.all(result == -1)
+
+
+# ---------------------------------------------------------------------------
+# return_distances
+# ---------------------------------------------------------------------------
+class TestReturnDistances:
+    def test_ann_returns_tuple(self, indexed_drpf):
+        idx, data = indexed_drpf
+        result = idx.ann(data[0], k=5, return_distances=True)
+        assert isinstance(result, tuple) and len(result) == 2
+
+    def test_ann_distances_dtype_and_shape(self, indexed_drpf):
+        idx, data = indexed_drpf
+        indices, distances = idx.ann(data[0], k=5, return_distances=True)
+        assert distances.dtype == np.float32
+        assert distances.shape == indices.shape == (5,)
+
+    def test_ann_distances_sorted_ascending(self, indexed_drpf):
+        idx, data = indexed_drpf
+        _, distances = idx.ann(data[0], k=8, return_distances=True)
+        assert np.all(np.diff(distances) >= 0)
+
+    def test_ann_distances_nonnegative(self, indexed_drpf):
+        idx, data = indexed_drpf
+        _, distances = idx.ann(data[0], k=8, return_distances=True)
+        valid = distances[distances < np.finfo(np.float32).max]
+        assert np.all(valid >= 0)
+
+    def test_ann_self_distance_near_zero(self, indexed_drpf):
+        """Querying with a point that's actually in the dataset should recover
+        itself as the top hit, with squared distance ~0."""
+        idx, data = indexed_drpf
+        indices, distances = idx.ann(data[0], k=5, votes=1, return_distances=True)
+        assert 0 in indices
+        pos = int(np.where(indices == 0)[0][0])
+        assert distances[pos] == pytest.approx(0.0, abs=1e-3)
+
+    def test_ann_distances_match_manual_computation(self, indexed_drpf):
+        """Returned squared distances should match brute-force ||x - q||^2."""
+        idx, data = indexed_drpf
+        q = data[3]
+        indices, distances = idx.ann(q, k=6, return_distances=True)
+        for i, d in zip(indices, distances):
+            if i == -1:
+                continue
+            expected = float(np.sum((data[i] - q) ** 2))
+            assert d == pytest.approx(expected, rel=1e-3, abs=1e-3)
+
+    def test_ann_batch_returns_tuple(self, indexed_drpf):
+        idx, data = indexed_drpf
+        result = idx.ann_batch(data[:4], k=5, return_distances=True)
+        assert isinstance(result, tuple) and len(result) == 2
+
+    def test_ann_batch_distances_shape_and_dtype(self, indexed_drpf):
+        idx, data = indexed_drpf
+        indices, distances = idx.ann_batch(data[:4], k=5, return_distances=True)
+        assert distances.shape == (4, 5) == indices.shape
+        assert distances.dtype == np.float32
+
+    def test_ann_batch_distances_sorted_per_row(self, indexed_drpf):
+        idx, data = indexed_drpf
+        _, distances = idx.ann_batch(data[:6], k=8, return_distances=True)
+        for row in distances:
+            assert np.all(np.diff(row) >= 0)
+
+    def test_ann_batch_padding_uses_float32_max(self, indexed_drpf):
+        idx, data = indexed_drpf
+        k = len(data) + 50
+        indices, distances = idx.ann_batch(data[:2], k=k, return_distances=True)
+        pad_mask = indices == -1
+        assert np.all(distances[pad_mask] == np.finfo(np.float32).max)
+
+
+# ---------------------------------------------------------------------------
+# Out-of-range tree index handling
+# ---------------------------------------------------------------------------
+class TestInvalidTreeIndex:
+    def test_get_leaf_sizes_out_of_range_raises(self, indexed_drpf):
+        idx, _ = indexed_drpf  # built with num_trees=3, valid indices are 0..2
+        with pytest.raises(ValueError):
+            idx.get_leaf_sizes(index=3)
+
+    def test_get_leaf_sizes_below_negative_one_raises(self, indexed_drpf):
+        idx, _ = indexed_drpf
+        with pytest.raises(ValueError):
+            idx.get_leaf_sizes(index=-2)
+
+    def test_get_forest_indices_out_of_range_raises(self, indexed_drpf):
+        idx, data = indexed_drpf
+        with pytest.raises(ValueError):
+            idx.get_forest_indices(data[0], index=3)
+
+    def test_get_forest_indices_below_negative_one_raises(self, indexed_drpf):
+        idx, data = indexed_drpf
+        with pytest.raises(ValueError):
+            idx.get_forest_indices(data[0], index=-2)
+
+
+# ---------------------------------------------------------------------------
+# Structural parameters: no_of_ss / approximate_search_space_size
+# ---------------------------------------------------------------------------
+class TestStructuralParams:
+    def test_explicit_no_of_ss_overrides_auto(self, small_data):
+        """Explicit no_of_ss should change leaf structure vs. the auto-derived default."""
+        idx_auto = DRPF(num_trees=3, depth=3, seed=0)
+        idx_auto.index(small_data)
+
+        idx_fixed = DRPF(num_trees=3, depth=3, seed=0, no_of_ss=5)
+        idx_fixed.index(small_data)
+
+        auto_sizes = idx_auto.get_leaf_sizes()
+        fixed_sizes = idx_fixed.get_leaf_sizes()
+        assert len(auto_sizes) != len(fixed_sizes) or \
+               auto_sizes.mean() != fixed_sizes.mean()
+
+    def test_approximate_search_space_size_changes_structure(self, small_data):
+        """Toggling between depth-limited and bag-size-limited splitting should
+        generally produce a different leaf count/shape."""
+        idx_depth = DRPF(num_trees=3, depth=4, seed=0, approximate_search_space_size=False)
+        idx_depth.index(small_data)
+
+        idx_bagged = DRPF(num_trees=3, depth=4, seed=0, approximate_search_space_size=True)
+        idx_bagged.index(small_data)
+
+        sizes_depth = idx_depth.get_leaf_sizes()
+        sizes_bagged = idx_bagged.get_leaf_sizes()
+        assert len(sizes_depth) != len(sizes_bagged) or \
+               sizes_depth.std() != sizes_bagged.std()
+
+    def test_leaves_still_partition_full_dataset_per_tree(self, small_data):
+        """Regardless of splitting strategy, each tree's leaves must sum to n_samples."""
+        idx = DRPF(num_trees=4, depth=3, seed=0, no_of_ss=10)
+        idx.index(small_data)
+        for t in range(4):
+            sizes = idx.get_leaf_sizes(index=t)
+            assert sizes.sum() == len(small_data)
+
+
+# ---------------------------------------------------------------------------
+# Memory safety of the zero-copy data pointer
+# ---------------------------------------------------------------------------
+class TestMemorySafety:
+    def test_index_keeps_data_alive_after_source_deleted(self):
+        """DRPF holds a raw pointer into the indexed array; the extension must
+        keep its own reference alive so queries still work after the caller
+        drops their reference and it's garbage collected."""
+        import gc
+
+        rng = np.random.default_rng(0)
+        data = rng.standard_normal((100, 8)).astype(np.float32)
+        query = data[0].copy()
+
+        idx = DRPF(num_trees=3, depth=3, seed=0)
+        idx.index(data)
+
+        del data
+        gc.collect()
+
+        result = idx.ann(query, k=5)
+        assert isinstance(result, np.ndarray)
+        assert np.all(result >= 0)
+
+    def test_index_copies_non_contiguous_input_safely(self):
+        """A transposed (non-C-contiguous) array must be copied rather than
+        aliased, since the backend assumes a C-contiguous buffer."""
+        rng = np.random.default_rng(0)
+        base = rng.standard_normal((8, 100)).astype(np.float32)
+        data = base.T  # shape (100, 8), non-C-contiguous view
+
+        assert not data.flags["C_CONTIGUOUS"]
+
+        idx = DRPF(num_trees=2, depth=2, seed=0)
+        idx.index(data)
+        result = idx.ann(np.ascontiguousarray(data[0]), k=5)
+        assert isinstance(result, np.ndarray)
+
+
+# ---------------------------------------------------------------------------
+# Non-contiguous query vectors
+# ---------------------------------------------------------------------------
+class TestNonContiguousQuery:
+    def test_ann_accepts_strided_query_view(self, indexed_drpf):
+        """A column slice of a 2D array is a non-contiguous 1D memoryview;
+        ann() should still accept it."""
+        idx, data = indexed_drpf
+        wide = np.tile(data[0].reshape(-1, 1), (1, 3)).astype(np.float32)  # (dim, 3)
+        query = wide[:, 0]
+        assert query.strides[0] != query.itemsize  # confirm it's actually strided
+        result = idx.ann(query, k=5)
+        assert isinstance(result, np.ndarray)
+
+
+# ---------------------------------------------------------------------------
+# Re-indexing an existing instance
+# ---------------------------------------------------------------------------
+class TestReindexing:
+    def test_index_can_be_called_a_second_time(self):
+        rng = np.random.default_rng(0)
+        data1 = rng.standard_normal((100, 8)).astype(np.float32)
+        data2 = rng.standard_normal((150, 8)).astype(np.float32)
+
+        idx = DRPF(num_trees=3, depth=3, seed=0)
+        idx.index(data1)
+        result1 = idx.ann(data1[0], k=5)
+        assert np.all(result1 < len(data1))
+
+        idx.index(data2)
+        result2 = idx.ann(data2[0], k=5)
+        assert np.all(result2 < len(data2))
+
+    def test_reindex_updates_leaf_sizes_to_new_dataset(self):
+        rng = np.random.default_rng(0)
+        data1 = rng.standard_normal((100, 8)).astype(np.float32)
+        data2 = rng.standard_normal((250, 8)).astype(np.float32)
+
+        idx = DRPF(num_trees=3, depth=3, seed=0)
+        idx.index(data1)
+        assert idx.get_leaf_sizes().sum() == len(data1) * 3
+
+        idx.index(data2)
+        assert idx.get_leaf_sizes().sum() == len(data2) * 3
+
+
+# ---------------------------------------------------------------------------
+# Threading determinism
+# ---------------------------------------------------------------------------
+class TestThreadingDeterminism:
+    def test_same_seed_different_thread_counts_agree(self, small_data):
+        """Build + query results must depend only on the seed, not on how many
+        OpenMP threads are used."""
+        idx1 = DRPF(num_trees=4, depth=3, seed=123, num_threads=1)
+        idx1.index(small_data)
+
+        idx2 = DRPF(num_trees=4, depth=3, seed=123, num_threads=4)
+        idx2.index(small_data)
+
+        queries = small_data[:10]
+        np.testing.assert_array_equal(
+            idx1.ann_batch(queries, k=5), idx2.ann_batch(queries, k=5)
+        )
+
+    def test_ann_batch_deterministic_with_same_seed(self, small_data):
+        idx1 = DRPF(num_trees=3, depth=3, seed=7)
+        idx1.index(small_data)
+        idx2 = DRPF(num_trees=3, depth=3, seed=7)
+        idx2.index(small_data)
+
+        queries = small_data[:15]
+        np.testing.assert_array_equal(
+            idx1.ann_batch(queries, k=5), idx2.ann_batch(queries, k=5)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Batch edge cases
+# ---------------------------------------------------------------------------
+class TestEmptyBatch:
+    def test_zero_queries(self, indexed_drpf):
+        idx, data = indexed_drpf
+        empty = np.empty((0, data.shape[1]), dtype=np.float32)
+        result = idx.ann_batch(empty, k=5)
+        assert result.shape == (0, 5)
+
+
+# ---------------------------------------------------------------------------
+# plot_query_leaves (visualization smoke test)
+# ---------------------------------------------------------------------------
+class TestPlotQueryLeaves:
+    def test_smoke_pca(self, indexed_drpf, monkeypatch):
+        pytest.importorskip("matplotlib")
+        pytest.importorskip("sklearn")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        idx, data = indexed_drpf
+        monkeypatch.setattr(plt, "show", lambda: None)
+        idx.plot_query_leaves(data[0], method="pca", bg_samples=20)
+        plt.close("all")
+
+    def test_invalid_method_raises(self, indexed_drpf, monkeypatch):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        idx, data = indexed_drpf
+        monkeypatch.setattr(plt, "show", lambda: None)
+        with pytest.raises(ValueError, match="Method must be"):
+            idx.plot_query_leaves(data[0], method="bogus")

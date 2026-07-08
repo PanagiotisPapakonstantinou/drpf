@@ -10,6 +10,14 @@ from libcpp cimport bool
 import numpy as np
 cimport numpy as np
 
+
+"""
+drpf.pyx — Cython bindings for the DRPF (Dense Random Projection Forest) C++ engine.
+
+Exposes the native `drpf::DRPF` C++ class as a Python extension type, handling
+NumPy <-> C++ buffer transfer, GIL release during index build/query,
+and Device (CPU/GPU) selection.
+"""
 cdef extern from "drpf.h" namespace "drpf":
     cdef cppclass ANNResult "drpf::DRPF::ANNResult":
         vector[int]   indices
@@ -22,7 +30,7 @@ cdef extern from "drpf.h" namespace "drpf":
     cdef cppclass CDRPF "drpf::DRPF":
         CDRPF(int num_trees, int split_depth, int no_of_ss,
               bool approximate_search_space_size, float bw_modifier,
-              int seed, float min_ratio, int num_threads, Device device_kind)
+              int seed, float min_ratio, int num_threads, Device device_kind) except +
         void index(const float* data_ptr, size_t length, int dimensions) except + nogil
         ANNResult ann(const float* data, size_t length, int votes, int k) except + nogil
         ANNResult ann_batch(const float* queries, int n_queries, int dim, int votes, int k) except + nogil
@@ -90,6 +98,16 @@ cdef class DRPF:
             to the middle 34% of the data mass, preventing splits on outlier noise.
         num_threads : int, default=0
             Number of OpenMP threads for parallel operations. 0 uses all available cores.
+        device : {"cpu", "gpu"}, default="cpu"
+            Execution backend used for both index construction and querying.
+            "gpu" requires the package to have been built with CUDA support and
+            dispatches batched query traversal to the CUDA backend; "cpu" uses
+            OpenMP across `num_threads` threads.
+
+        Raises
+        ------
+        ValueError
+            If `device` is not one of "cpu" or "gpu".
         """
 
         cdef Device bk
@@ -116,9 +134,6 @@ cdef class DRPF:
         Parameters
         ----------
         data : (n_samples, n_features) float32 ndarray
-        device : {"cpu", "gpu"}, default="cpu"
-            Which device to use for searches. "gpu" requires the package
-            to have been built with CUDA support.
         """
         cdef np.ndarray[np.float32_t, ndim=2, mode="c"] data_float32 = \
             np.ascontiguousarray(data, dtype=np.float32)
@@ -143,6 +158,13 @@ cdef class DRPF:
             The query vector.
         k : int
             Number of nearest neighbors to return.
+        votes : int, default=1
+            Minimum number of trees in which a candidate must appear (i.e., land
+            in the same leaf as the query) to be promoted to the exact-distance
+            refinement stage. Lower values (e.g., 1) search a larger candidate
+            pool for higher recall at the cost of speed; higher values prune
+            more aggressively for faster, lower-recall search. Can be tuned
+            per-query without rebuilding the index.
         return_distances : bool, default=False
             If True, also return the squared L2 distances to each neighbor.
             If False, only indices are returned (default behavior).
@@ -211,6 +233,12 @@ cdef class DRPF:
             The query vectors. Must be a C-contiguous float32 array.
         k : int
             Number of nearest neighbors to return per query.
+        votes : int, default=1
+            Minimum number of trees in which a candidate must appear across
+            the forest to be promoted to the exact-distance refinement stage,
+            applied independently per query. Lower values widen the candidate
+            pool (higher recall, slower); higher values prune more aggressively
+            (faster, lower recall). Adjustable per call without rebuilding the index.
         return_distances : bool, default=False
             If True, also return the squared L2 distances to each neighbor.
             If False, only indices are returned (default behavior).
