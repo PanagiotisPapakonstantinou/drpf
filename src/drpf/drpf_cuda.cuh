@@ -3,13 +3,12 @@
 #include <cstdint>
 #include <memory>
 
+struct cublasContext;
+typedef struct cublasContext *cublasHandle_t;
+struct __half;
+
 namespace drpf
 {
-
-    struct cublasContext;
-    typedef struct cublasContext *cublasHandle_t;
-
-    struct __half;
 
     struct CudaDeleter
     {
