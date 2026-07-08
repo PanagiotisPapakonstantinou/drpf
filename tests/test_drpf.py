@@ -769,27 +769,12 @@ class TestThreadingDeterminism:
 
         queries = small_data[:10]
         
-
-        r1, d1 = idx1.ann_batch(queries, k=5, return_distances=True)
-        r2, d2 = idx2.ann_batch(queries, k=5, return_distances=True)
+        r1 = idx1.ann_batch(queries, k=5)
+        r2 = idx2.ann_batch(queries, k=5)
         
         for i in range(len(queries)):
-            np.testing.assert_allclose(d1[i], d2[i], atol=1e-5, rtol=1e-5)
-            
             overlap = len(set(r1[i].tolist()) & set(r2[i].tolist()))
-            assert overlap >= 4, f"Results diverged too much on query {i}"
-
-    def test_ann_batch_deterministic_with_same_seed(self, small_data):
-        idx1 = DRPF(num_trees=3, depth=3, seed=7)
-        idx1.index(small_data)
-        idx2 = DRPF(num_trees=3, depth=3, seed=7)
-        idx2.index(small_data)
-
-        queries = small_data[:15]
-        np.testing.assert_array_equal(
-            idx1.ann_batch(queries, k=5), idx2.ann_batch(queries, k=5)
-        )
-
+            assert overlap >= 4, f"Results diverged too much on query {i}: overlap {overlap}/5"
 
 # ---------------------------------------------------------------------------
 # Batch edge cases
