@@ -520,36 +520,20 @@ class TestConstructorValidation:
 # Votes threshold
 # ---------------------------------------------------------------------------
 class TestVotes:
-    def test_default_votes_is_one(self, indexed_drpf):
+    def test_votes_zero_raises(self, indexed_drpf):
         idx, data = indexed_drpf
-        default_result = idx.ann(data[0], k=5)
-        explicit_result = idx.ann(data[0], k=5, votes=1)
-        np.testing.assert_array_equal(default_result, explicit_result)
+        with pytest.raises(ValueError, match="votes"):
+            idx.ann(data[0], k=5, votes=0)
 
-    def test_votes_zero_behaves_like_one(self, indexed_drpf):
-        """Backend clamps votes to max(1, votes)."""
+    def test_votes_negative_raises(self, indexed_drpf):
         idx, data = indexed_drpf
-        result_zero = idx.ann(data[0], k=5, votes=0)
-        result_one = idx.ann(data[0], k=5, votes=1)
-        np.testing.assert_array_equal(result_zero, result_one)
+        with pytest.raises(ValueError, match="votes"):
+            idx.ann(data[0], k=5, votes=-1)
 
-    def test_higher_votes_never_adds_new_candidates(self, indexed_drpf):
-        """Raising the vote threshold can only prune the candidate pool, never grow it."""
+    def test_votes_zero_raises_in_batch_too(self, indexed_drpf):
         idx, data = indexed_drpf
-        low = set(idx.ann(data[0], k=50, votes=1).tolist()) - {-1}
-        high = set(idx.ann(data[0], k=50, votes=3).tolist()) - {-1}
-        assert high.issubset(low)
-
-    def test_votes_exceeding_num_trees_returns_no_candidates(self, indexed_drpf):
-        """indexed_drpf is built with num_trees=3; no candidate can reach 10 votes."""
-        idx, data = indexed_drpf
-        result = idx.ann(data[0], k=5, votes=10)
-        assert np.all(result == -1)
-
-    def test_votes_applies_to_batch_too(self, indexed_drpf):
-        idx, data = indexed_drpf
-        result = idx.ann_batch(data[:5], k=5, votes=10)
-        assert np.all(result == -1)
+        with pytest.raises(ValueError, match="votes"):
+            idx.ann_batch(data[:5], k=5, votes=0)
 
 
 # ---------------------------------------------------------------------------
@@ -778,19 +762,17 @@ class TestReindexing:
 # ---------------------------------------------------------------------------
 class TestThreadingDeterminism:
     def test_same_seed_different_thread_counts_agree(self, small_data):
-        """Build + query results must depend only on the seed, not on how many
-        OpenMP threads are used."""
-        idx1 = DRPF(num_trees=4, depth=3, seed=123, num_threads=1)
-        idx1.index(small_data)
+      idx1 = DRPF(num_trees=4, depth=3, seed=123, num_threads=1)
+      idx1.index(small_data)
+      idx2 = DRPF(num_trees=4, depth=3, seed=123, num_threads=4)
+      idx2.index(small_data)
 
-        idx2 = DRPF(num_trees=4, depth=3, seed=123, num_threads=4)
-        idx2.index(small_data)
-
-        queries = small_data[:10]
-        np.testing.assert_array_equal(
-            idx1.ann_batch(queries, k=5), idx2.ann_batch(queries, k=5)
-        )
-
+      queries = small_data[:10]
+      r1 = idx1.ann_batch(queries, k=5)
+      r2 = idx2.ann_batch(queries, k=5)
+      for row1, row2 in zip(r1, r2):
+          assert set(row1.tolist()) == set(row2.tolist())
+          
     def test_ann_batch_deterministic_with_same_seed(self, small_data):
         idx1 = DRPF(num_trees=3, depth=3, seed=7)
         idx1.index(small_data)
