@@ -16,7 +16,7 @@
 #include <emmintrin.h>
 #endif
 
-namspace drpf
+namespace drpf
 {
 
     // -----------------------------------------------------------------------------
@@ -283,7 +283,7 @@ namspace drpf
      * @param matrix The matrix to fill.
      * @param seed The base seed for reproducibility.
      */
-    inline void generateRandomMatrix(Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> & matrix, int seed = 0)
+    inline void generateRandomMatrix(Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> &matrix, int seed = 0)
     {
         const long rows = matrix.rows();
         const long cols = matrix.cols();

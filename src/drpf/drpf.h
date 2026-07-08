@@ -28,8 +28,6 @@
 #include "fft_kde.h"
 #include "utils.h"
 
-#include "drpf_backend.h"
-
 namespace drpf
 {
 
@@ -146,6 +144,13 @@ namespace drpf
             return result_depth;
         }
     };
+
+}
+
+#include "drpf_backend.h"
+
+using namespace drpf
+{
 
     /**
      * @brief Dense Random Projection Forest.

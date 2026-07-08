@@ -31,7 +31,7 @@
 #include <queue>
 #include <omp.h>
 
-namspace drpf
+namespace drpf
 {
 
     template <typename Scalar>
