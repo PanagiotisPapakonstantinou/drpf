@@ -62,8 +62,6 @@ DRPF_CUDA_ARCH=sm_86 pip install .
 index = drpf.DRPF(num_trees=50, depth=8, device="gpu")
 index.index(data)
 
-# Large batches automatically run on GPU; small batches (< 64 queries)
-# transparently fall back to the CPU path.
 results = index.ann_batch(queries, k=10)
 ```
 
@@ -113,6 +111,6 @@ index.print_leaf_stats("My Data Index")
 # 4. Batch Search
 # Pass multiple queries at once to utilize parallel C++ execution
 queries = np.random.random((100, 128)).astype(np.float32)
-indices = index.ann_batch(queries, k=10)
+indices = index.ann_batch(queries, k=10, votes=2)
 
 print(f"Nearest neighbors for first query: {indices[0]}")
