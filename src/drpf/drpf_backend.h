@@ -31,6 +31,10 @@
 #include <queue>
 #include <omp.h>
 
+#ifdef USE_CUDA
+#include "drpf_cuda.cuh"
+#endif
+
 namespace drpf
 {
 
@@ -286,7 +290,6 @@ namespace drpf
     };
 
 #ifdef USE_CUDA
-#include "drpf_cuda.cuh"
 
     class DRPFBackendGPU : public DrpfBackend
     {
