@@ -10,16 +10,16 @@ from libcpp cimport bool
 import numpy as np
 cimport numpy as np
 
-cdef extern from "drpf.h":
-    cdef cppclass ANNResult "DRPF::ANNResult":
+cdef extern from "drpf.h" namespace "drpf":
+    cdef cppclass ANNResult "drpf::DRPF::ANNResult":
         vector[int]   indices
         vector[float] distances_sq
 
-    cdef enum Device "DRPF::Device":
-        CPU "DRPF::Device::CPU"
-        GPU "DRPF::Device::GPU"
+    cdef enum Device "drpf::DRPF::Device":
+        CPU "drpf::DRPF::Device::CPU"
+        GPU "drpf::DRPF::Device::GPU"
 
-    cdef cppclass CDRPF "DRPF":
+    cdef cppclass CDRPF "drpf::DRPF":
         CDRPF(int num_trees, int split_depth, int no_of_ss,
               bool approximate_search_space_size, float bw_modifier,
               int seed, float min_ratio, int num_threads, Device device_kind)
