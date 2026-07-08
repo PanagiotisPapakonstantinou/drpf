@@ -10,25 +10,16 @@ struct __half;
 
 struct CudaDeleter
 {
-    void operator()(void *ptr) const
-    {
-        if (ptr)
-            cudaFree(ptr);
-    }
+    void operator()(void *ptr) const;
 };
 
 struct CublasDeleter
 {
-    void operator()(cublasContext *handle) const
-    {
-        if (handle)
-            cublasDestroy(handle);
-    }
+    void operator()(cublasContext *handle) const;
 };
 
 template <typename T>
 using cuda_ptr = std::unique_ptr<T, CudaDeleter>;
-
 using cublas_ptr = std::unique_ptr<cublasContext, CublasDeleter>;
 
 struct GPUNode

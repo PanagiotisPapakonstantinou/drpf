@@ -31,6 +31,18 @@
         }                                                                  \
     } while (0)
 
+void CudaDeleter::operator()(void *ptr) const
+{
+    if (ptr)
+        cudaFree(ptr);
+}
+
+void CublasDeleter::operator()(cublasContext *handle) const
+{
+    if (handle)
+        cublasDestroy(handle);
+}
+
 template <typename T>
 cuda_ptr<T> allocate_device(size_t num_elements)
 {
