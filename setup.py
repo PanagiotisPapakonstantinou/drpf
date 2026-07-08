@@ -155,6 +155,8 @@ def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None, include_
         "-O3",
         "-DNDEBUG",
         "-DUSE_CUDA",
+        "-DEIGEN_NO_DEBUG",
+        "-DEIGEN_USE_OPENMP",
         f"-arch={arch}",
     ]
 
@@ -374,6 +376,12 @@ ext = Extension(
         eigen_include,
         np.get_include(),
     ] + cuda_include_dirs,       
+
+    define_macros=[
+        ("EIGEN_NO_DEBUG", None),
+        ("EIGEN_USE_OPENMP", None)
+    ],
+
     library_dirs=cuda_library_dirs,
     libraries=cuda_libraries,      
     runtime_library_dirs=cuda_runtime_dirs if sys.platform != "win32" else None,

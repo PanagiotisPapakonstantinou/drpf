@@ -1,11 +1,35 @@
 #pragma once
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 struct cublasContext;
 typedef struct cublasContext *cublasHandle_t;
 
 struct __half;
+
+struct CudaDeleter
+{
+    void operator()(void *ptr) const
+    {
+        if (ptr)
+            cudaFree(ptr);
+    }
+};
+
+struct CublasDeleter
+{
+    void operator()(cublasContext *handle) const
+    {
+        if (handle)
+            cublasDestroy(handle);
+    }
+};
+
+template <typename T>
+using cuda_ptr = std::unique_ptr<T, CudaDeleter>;
+
+using cublas_ptr = std::unique_ptr<cublasContext, CublasDeleter>;
 
 struct GPUNode
 {
@@ -34,35 +58,34 @@ struct FlattenedForest
 // Lives on the CPU but owns GPU resources.
 struct GPUDataHandle
 {
-    float *d_full_dataset = nullptr;
-    __half *d_full_dataset_h16 = nullptr;
-    float *d_norms = nullptr;
-    GPUNode *d_nodes = nullptr;
-    GPULeafInfo *d_leaf_info = nullptr;
-    unsigned int *d_leaf_data = nullptr;
-    int *d_tree_roots = nullptr;
-    int *d_tree_offsets = nullptr;
-    float *d_projection_matrix = nullptr;
+    cuda_ptr<float> d_full_dataset = nullptr;
+    cuda_ptr<__half> d_full_dataset_h16 = nullptr;
+    cuda_ptr<float> d_norms = nullptr;
+    cuda_ptr<GPUNode> d_nodes = nullptr;
+    cuda_ptr<GPULeafInfo> d_leaf_info = nullptr;
+    cuda_ptr<unsigned int> d_leaf_data = nullptr;
+    cuda_ptr<int> d_tree_roots = nullptr;
+    cuda_ptr<int> d_tree_offsets = nullptr;
+    cuda_ptr<float> d_projection_matrix = nullptr;
 
     long rows = 0;
     long cols = 0;
     int num_trees = 0;
     int proj_cols = 0;
 
-    // Persistent scratch for search (allocated once, reused per call)
-    cublasHandle_t cublas = nullptr;
-    float *d_queries = nullptr;
-    float *d_projected_queries = nullptr;
-    int *d_out_idx = nullptr;
-    float *d_out_dist = nullptr;
-    int *d_cand_buf = nullptr;
-    uint32_t *d_seen = nullptr;
+    cublas_ptr cublas = nullptr;
+    cuda_ptr<float> d_queries = nullptr;
+    cuda_ptr<float> d_projected_queries = nullptr;
+    cuda_ptr<int> d_out_idx = nullptr;
+    cuda_ptr<float> d_out_dist = nullptr;
+    cuda_ptr<int> d_cand_buf = nullptr;
+    cuda_ptr<uint32_t> d_seen = nullptr;
     uint32_t generation = 0;
-    int *d_num_candidates = nullptr;
+    cuda_ptr<int> d_num_candidates = nullptr;
 
-    int max_batch = 0; // largest n_queries supported by scratch
-    int max_k = 0;     // largest k supported by scratch
-    int max_buf = 0;   // candidates per query
+    int max_batch = 0;
+    int max_k = 0;
+    int max_buf = 0;
 };
 
 // Initialize VRAM and persistent scratch.
@@ -92,6 +115,3 @@ void compute_gpu_projections_and_norms(
     int rows,
     int cols,
     int proj_cols);
-
-// Free everything.
-void free_gpu_handle(GPUDataHandle &handle);

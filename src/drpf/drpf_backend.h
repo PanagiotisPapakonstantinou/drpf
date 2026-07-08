@@ -1,9 +1,5 @@
 #pragma once
 
-#define EIGEN_NO_DEBUG
-
-#define EIGEN_USE_OPENMP
-
 #if defined(_MSC_VER)
 #define FORCE_INLINE __forceinline
 #else
@@ -406,11 +402,6 @@ public:
             data, rows, cols,
             proj_matrix, norms, &cpu_forest,
             (int)cpu_forest.size(), max_buffer);
-    }
-
-    ~DRPFBackendGPU()
-    {
-        free_gpu_handle(_h);
     }
 
     ANNResult ann(const float *query, int dim, int votes, int k) override

@@ -31,6 +31,14 @@
         }                                                                  \
     } while (0)
 
+template <typename T>
+cuda_ptr<T> allocate_device(size_t num_elements)
+{
+    T *ptr = nullptr;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&ptr), num_elements * sizeof(T)));
+    return cuda_ptr<T>(ptr);
+}
+
 __global__ void float_to_half_kernel(const float *src, __half *dst, size_t n)
 {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -124,7 +132,6 @@ __global__ void traverse_trees_kernel(
     if (tid == 0)
         d_num_candidates[q_idx] = min(s_num_candidates, max_search_buffer_size);
 }
-
 
 #define DRPF_BLOCK_SIZE 256
 
@@ -229,7 +236,6 @@ __global__ void ann_search_kernel(
             }
         }
 
-        // Lane 0 of each warp deposits its result into shared memory
         if (lane == 0)
         {
             s_warp_dsq[warp_id] = my_dsq;
@@ -237,7 +243,6 @@ __global__ void ann_search_kernel(
         }
         __syncthreads();
 
-        // Single thread merges this round's results into the top-k list
         if (warp_id == 0 && lane == 0)
         {
             const int rem = num_candidates - base;
@@ -315,84 +320,76 @@ GPUDataHandle setup_gpu_backend(
     auto_batch = std::max(auto_batch, prop.multiProcessorCount);
     h.max_batch = auto_batch;
 
-    CUDA_CHECK(cudaMalloc(&h.d_full_dataset, (size_t)rows * cols * sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(h.d_full_dataset, data,
+    h.d_full_dataset = allocate_device<float>((size_t)rows * cols);
+    CUDA_CHECK(cudaMemcpy(h.d_full_dataset.get(), data,
                           (size_t)rows * cols * sizeof(float),
                           cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc(&h.d_full_dataset_h16,
-                          (size_t)rows * cols * sizeof(__half)));
+    h.d_full_dataset_h16 = allocate_device<__half>((size_t)rows * cols);
     {
         size_t total = (size_t)rows * cols;
         int threads = 256;
         int blocks = (int)((total + threads - 1) / threads);
         float_to_half_kernel<<<blocks, threads>>>(
-            h.d_full_dataset, h.d_full_dataset_h16, total);
+            h.d_full_dataset.get(), h.d_full_dataset_h16.get(), total);
         CUDA_CHECK(cudaGetLastError());
     }
 
-    CUDA_CHECK(cudaFree(h.d_full_dataset));
-    h.d_full_dataset = nullptr;
+    h.d_full_dataset.reset();
 
-    CUDA_CHECK(cudaMalloc(&h.d_norms, (size_t)rows * sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(h.d_norms, norms,
+    h.d_norms = allocate_device<float>((size_t)rows);
+    CUDA_CHECK(cudaMemcpy(h.d_norms.get(), norms,
                           (size_t)rows * sizeof(float),
                           cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc(&h.d_projection_matrix,
-                          (size_t)cols * proj_cols * sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(h.d_projection_matrix, projection_matrix,
+    h.d_projection_matrix = allocate_device<float>((size_t)cols * proj_cols);
+    CUDA_CHECK(cudaMemcpy(h.d_projection_matrix.get(), projection_matrix,
                           (size_t)cols * proj_cols * sizeof(float),
                           cudaMemcpyHostToDevice));
 
     if (forest.num_nodes > 0)
     {
-        CUDA_CHECK(cudaMalloc(&h.d_nodes, forest.num_nodes * sizeof(GPUNode)));
-        CUDA_CHECK(cudaMemcpy(h.d_nodes, forest.nodes,
+        h.d_nodes = allocate_device<GPUNode>(forest.num_nodes);
+        CUDA_CHECK(cudaMemcpy(h.d_nodes.get(), forest.nodes,
                               forest.num_nodes * sizeof(GPUNode),
                               cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&h.d_leaf_info, forest.num_nodes * sizeof(GPULeafInfo)));
-        CUDA_CHECK(cudaMemcpy(h.d_leaf_info, forest.leaf_info,
+        h.d_leaf_info = allocate_device<GPULeafInfo>(forest.num_nodes);
+        CUDA_CHECK(cudaMemcpy(h.d_leaf_info.get(), forest.leaf_info,
                               forest.num_nodes * sizeof(GPULeafInfo),
                               cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&h.d_leaf_data, forest.num_leaf_data * sizeof(unsigned int)));
-        CUDA_CHECK(cudaMemcpy(h.d_leaf_data, forest.leaf_data,
+        h.d_leaf_data = allocate_device<unsigned int>(forest.num_leaf_data);
+        CUDA_CHECK(cudaMemcpy(h.d_leaf_data.get(), forest.leaf_data,
                               forest.num_leaf_data * sizeof(unsigned int),
                               cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&h.d_tree_roots, forest.num_trees * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(h.d_tree_roots, forest.tree_roots,
+        h.d_tree_roots = allocate_device<int>(forest.num_trees);
+        CUDA_CHECK(cudaMemcpy(h.d_tree_roots.get(), forest.tree_roots,
                               forest.num_trees * sizeof(int),
                               cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&h.d_tree_offsets, forest.num_trees * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(h.d_tree_offsets, forest.tree_offsets,
+        h.d_tree_offsets = allocate_device<int>(forest.num_trees);
+        CUDA_CHECK(cudaMemcpy(h.d_tree_offsets.get(), forest.tree_offsets,
                               forest.num_trees * sizeof(int),
                               cudaMemcpyHostToDevice));
     }
 
-    CUBLAS_CHECK(cublasCreate(&h.cublas));
+    cublasHandle_t raw_cublas = nullptr;
+    CUBLAS_CHECK(cublasCreate(&raw_cublas));
+    h.cublas.reset(raw_cublas);
 
-    CUDA_CHECK(cudaMalloc(&h.d_queries,
-                          (size_t)h.max_batch * cols * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&h.d_projected_queries,
-                          (size_t)h.max_batch * proj_cols * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&h.d_out_idx,
-                          (size_t)h.max_batch * max_k * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&h.d_out_dist,
-                          (size_t)h.max_batch * max_k * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&h.d_cand_buf,
-                          (size_t)h.max_batch * max_search_buffer_size * sizeof(int)));
+    h.d_queries = allocate_device<float>((size_t)h.max_batch * cols);
+    h.d_projected_queries = allocate_device<float>((size_t)h.max_batch * proj_cols);
+    h.d_out_idx = allocate_device<int>((size_t)h.max_batch * max_k);
+    h.d_out_dist = allocate_device<float>((size_t)h.max_batch * max_k);
+    h.d_cand_buf = allocate_device<int>((size_t)h.max_batch * max_search_buffer_size);
+    h.d_seen = allocate_device<uint32_t>((size_t)h.max_batch * rows);
 
-    CUDA_CHECK(cudaMalloc(&h.d_seen,
-                          (size_t)h.max_batch * rows * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMemset(h.d_seen, 0,
+    CUDA_CHECK(cudaMemset(h.d_seen.get(), 0,
                           (size_t)h.max_batch * rows * sizeof(uint32_t)));
 
-    CUDA_CHECK(cudaMalloc(&h.d_num_candidates,
-                          (size_t)h.max_batch * sizeof(int)));
+    h.d_num_candidates = allocate_device<int>((size_t)h.max_batch);
 
     return h;
 }
@@ -407,45 +404,44 @@ static void search_chunk(GPUDataHandle &h,
     h.generation++;
     if (h.generation >= (1u << 24))
     {
-        CUDA_CHECK(cudaMemset(h.d_seen, 0,
+        CUDA_CHECK(cudaMemset(h.d_seen.get(), 0,
                               (size_t)h.max_batch * h.rows * sizeof(uint32_t)));
         h.generation = 1;
     }
 
     uint32_t target_votes = (uint32_t)max(1, votes);
 
-    CUDA_CHECK(cudaMemcpy(h.d_queries, queries,
+    CUDA_CHECK(cudaMemcpy(h.d_queries.get(), queries,
                           (size_t)n_queries * dim * sizeof(float), cudaMemcpyHostToDevice));
 
     float alpha = 1.0f, beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemm(h.cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+    CUBLAS_CHECK(cublasSgemm(h.cublas.get(), CUBLAS_OP_T, CUBLAS_OP_N,
                              h.proj_cols, n_queries, (int)h.cols,
-                             &alpha, h.d_projection_matrix, (int)h.cols,
-                             h.d_queries, (int)h.cols,
-                             &beta, h.d_projected_queries, h.proj_cols));
+                             &alpha, h.d_projection_matrix.get(), (int)h.cols,
+                             h.d_queries.get(), (int)h.cols,
+                             &beta, h.d_projected_queries.get(), h.proj_cols));
 
     traverse_trees_kernel<<<n_queries, DRPF_BLOCK_SIZE>>>(
-        h.d_projected_queries,
-        h.d_nodes, h.d_leaf_info, h.d_leaf_data, h.d_tree_roots, h.d_tree_offsets,
+        h.d_projected_queries.get(),
+        h.d_nodes.get(), h.d_leaf_info.get(), h.d_leaf_data.get(), h.d_tree_roots.get(), h.d_tree_offsets.get(),
         h.num_trees, h.proj_cols, h.max_buf,
-        h.d_cand_buf, h.d_num_candidates,
-        h.d_seen, h.generation, target_votes, (int)h.rows);
+        h.d_cand_buf.get(), h.d_num_candidates.get(),
+        h.d_seen.get(), h.generation, target_votes, (int)h.rows);
     CUDA_CHECK(cudaGetLastError());
 
     size_t smem = (size_t)h.cols * sizeof(float);
     ann_search_kernel<<<n_queries, DRPF_BLOCK_SIZE, smem>>>(
-        h.d_queries, n_queries, k, h.max_buf,
-        h.d_full_dataset_h16, h.d_norms, (int)h.cols,
-        h.d_out_idx, h.d_out_dist,
-        h.d_cand_buf, h.d_num_candidates);
+        h.d_queries.get(), n_queries, k, h.max_buf,
+        h.d_full_dataset_h16.get(), h.d_norms.get(), (int)h.cols,
+        h.d_out_idx.get(), h.d_out_dist.get(),
+        h.d_cand_buf.get(), h.d_num_candidates.get());
     CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaMemcpy(out_indices, h.d_out_idx,
+    CUDA_CHECK(cudaMemcpy(out_indices, h.d_out_idx.get(),
                           (size_t)n_queries * k * sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(out_distances, h.d_out_dist,
+    CUDA_CHECK(cudaMemcpy(out_distances, h.d_out_dist.get(),
                           (size_t)n_queries * k * sizeof(float), cudaMemcpyDeviceToHost));
 }
-
 
 void search_gpu_batch(
     GPUDataHandle &h,
@@ -464,51 +460,6 @@ void search_gpu_batch(
             out_distances + (size_t)offset * k);
         offset += chunk;
     }
-}
-
-// ============================================================================
-// Teardown
-// ============================================================================
-void free_gpu_handle(GPUDataHandle &h)
-{
-    if (h.cublas)
-        cublasDestroy(h.cublas);
-    if (h.d_queries)
-        cudaFree(h.d_queries);
-    if (h.d_projected_queries)
-        cudaFree(h.d_projected_queries);
-    if (h.d_out_idx)
-        cudaFree(h.d_out_idx);
-    if (h.d_out_dist)
-        cudaFree(h.d_out_dist);
-    if (h.d_cand_buf)
-        cudaFree(h.d_cand_buf);
-    if (h.d_full_dataset)
-        cudaFree(h.d_full_dataset);
-    if (h.d_full_dataset_h16)
-        cudaFree(h.d_full_dataset_h16);
-    if (h.d_norms)
-        cudaFree(h.d_norms);
-    if (h.d_projection_matrix)
-        cudaFree(h.d_projection_matrix);
-    if (h.d_nodes)
-        cudaFree(h.d_nodes);
-    if (h.d_leaf_data)
-        cudaFree(h.d_leaf_data);
-    if (h.d_tree_roots)
-        cudaFree(h.d_tree_roots);
-    if (h.d_seen)
-        cudaFree(h.d_seen);
-
-    if (h.d_leaf_info)
-        cudaFree(h.d_leaf_info);
-    if (h.d_tree_offsets)
-        cudaFree(h.d_tree_offsets);
-
-    if (h.d_num_candidates)
-        cudaFree(h.d_num_candidates);
-
-    h = GPUDataHandle{};
 }
 
 // ============================================================================
@@ -553,31 +504,29 @@ void compute_gpu_projections_and_norms(
         throw std::invalid_argument("DRPF CUDA Error: One of the host matrix pointers is NULL.");
     }
 
-    cublasHandle_t handle;
-    CUBLAS_CHECK(cublasCreate(&handle));
+    cublasHandle_t raw_handle = nullptr;
+    CUBLAS_CHECK(cublasCreate(&raw_handle));
+    cublas_ptr handle(raw_handle);
 
-    float *d_data = nullptr, *d_norms = nullptr;
-    CUDA_CHECK(cudaMalloc((void **)&d_data, (size_t)rows * cols * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void **)&d_norms, (size_t)rows * sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(d_data, h_data, (size_t)rows * cols * sizeof(float), cudaMemcpyHostToDevice));
+    auto d_data = allocate_device<float>((size_t)rows * cols);
+    auto d_norms = allocate_device<float>((size_t)rows);
+
+    CUDA_CHECK(cudaMemcpy(d_data.get(), h_data, (size_t)rows * cols * sizeof(float), cudaMemcpyHostToDevice));
 
     int threadsPerBlock = 256;
     int blocksNorms = (rows + threadsPerBlock - 1) / threadsPerBlock;
     if (blocksNorms < 1)
         blocksNorms = 1;
-    compute_squared_norms_kernel<<<blocksNorms, threadsPerBlock>>>(d_data, d_norms, rows, cols);
+    compute_squared_norms_kernel<<<blocksNorms, threadsPerBlock>>>(d_data.get(), d_norms.get(), rows, cols);
     CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaMemcpy(h_norms, d_norms, (size_t)rows * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_norms, d_norms.get(), (size_t)rows * sizeof(float), cudaMemcpyDeviceToHost));
 
     const int MAX_CHUNK_COLS = 512;
 
-    float *d_proj_chunk = nullptr, *d_out_f32_chunk = nullptr;
-    __half *d_out_f16_chunk = nullptr;
-
-    CUDA_CHECK(cudaMalloc((void **)&d_proj_chunk, (size_t)cols * MAX_CHUNK_COLS * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void **)&d_out_f32_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void **)&d_out_f16_chunk, (size_t)rows * MAX_CHUNK_COLS * sizeof(__half)));
+    auto d_proj_chunk = allocate_device<float>((size_t)cols * MAX_CHUNK_COLS);
+    auto d_out_f32_chunk = allocate_device<float>((size_t)rows * MAX_CHUNK_COLS);
+    auto d_out_f16_chunk = allocate_device<__half>((size_t)rows * MAX_CHUNK_COLS);
 
     __half *h_out_f16 = reinterpret_cast<__half *>(h_out_half);
     const float alpha = 1.0f;
@@ -587,38 +536,31 @@ void compute_gpu_projections_and_norms(
     {
         int current_cols = std::min(MAX_CHUNK_COLS, proj_cols - offset);
 
-        CUDA_CHECK(cudaMemcpy(d_proj_chunk,
+        CUDA_CHECK(cudaMemcpy(d_proj_chunk.get(),
                               h_proj + ((size_t)offset * cols),
                               (size_t)cols * current_cols * sizeof(float),
                               cudaMemcpyHostToDevice));
 
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        CUBLAS_CHECK(cublasSgemm(handle.get(), CUBLAS_OP_T, CUBLAS_OP_N,
                                  rows, current_cols, cols,
                                  &alpha,
-                                 d_data, cols,
-                                 d_proj_chunk, cols,
+                                 d_data.get(), cols,
+                                 d_proj_chunk.get(), cols,
                                  &beta,
-                                 d_out_f32_chunk, rows));
+                                 d_out_f32_chunk.get(), rows));
 
         size_t total_elements = (size_t)rows * current_cols;
         int blocksCast = (int)((total_elements + threadsPerBlock - 1) / threadsPerBlock);
         if (blocksCast < 1)
             blocksCast = 1;
 
-        cast_float_to_half_kernel<<<blocksCast, threadsPerBlock>>>(d_out_f32_chunk, d_out_f16_chunk, total_elements);
+        cast_float_to_half_kernel<<<blocksCast, threadsPerBlock>>>(d_out_f32_chunk.get(), d_out_f16_chunk.get(), total_elements);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 
         CUDA_CHECK(cudaMemcpy(h_out_f16 + ((size_t)offset * rows),
-                              d_out_f16_chunk,
+                              d_out_f16_chunk.get(),
                               (size_t)rows * current_cols * sizeof(__half),
                               cudaMemcpyDeviceToHost));
     }
-
-    CUDA_CHECK(cudaFree(d_data));
-    CUDA_CHECK(cudaFree(d_norms));
-    CUDA_CHECK(cudaFree(d_proj_chunk));
-    CUDA_CHECK(cudaFree(d_out_f32_chunk));
-    CUDA_CHECK(cudaFree(d_out_f16_chunk));
-    CUBLAS_CHECK(cublasDestroy(handle));
 }

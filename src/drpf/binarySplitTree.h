@@ -1,10 +1,5 @@
 #pragma once
 
-// Disable Eigen debug assertions for maximum performance
-#define EIGEN_NO_DEBUG
-// Enable OpenMP parallelization within Eigen operations
-#define EIGEN_USE_OPENMP
-
 #include <Eigen/Core>
 #include <algorithm>
 #include <cmath>
