@@ -39,7 +39,7 @@ namespace drpf
     {
     private:
         std::vector<float> projectionValues;
-        std::unique_ptr<KdeFFT<float>> kde;
+        std::unique_ptr<fftkde::KdeFFT<float>> kde;
         float split_data_bandwidth;
         float min_ratio;
 
@@ -149,7 +149,7 @@ namespace drpf
 
 #include "drpf_backend.h"
 
-using namespace drpf
+namespace drpf
 {
 
     /**
