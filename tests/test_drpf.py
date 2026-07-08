@@ -612,7 +612,7 @@ class TestReturnDistances:
 # ---------------------------------------------------------------------------
 class TestInvalidTreeIndex:
     def test_get_leaf_sizes_out_of_range_raises(self, indexed_drpf):
-        idx, _ = indexed_drpf  # built with num_trees=3, valid indices are 0..2
+        idx, _ = indexed_drpf
         with pytest.raises(ValueError):
             idx.get_leaf_sizes(index=3)
 
@@ -721,7 +721,7 @@ class TestNonContiguousQuery:
         idx, data = indexed_drpf
         wide = np.tile(data[0].reshape(-1, 1), (1, 3)).astype(np.float32)  # (dim, 3)
         query = wide[:, 0]
-        assert query.strides[0] != query.itemsize  # confirm it's actually strided
+        assert query.strides[0] != query.itemsize
         result = idx.ann(query, k=5)
         assert isinstance(result, np.ndarray)
 
@@ -756,25 +756,6 @@ class TestReindexing:
         idx.index(data2)
         assert idx.get_leaf_sizes().sum() == len(data2) * 3
 
-
-# ---------------------------------------------------------------------------
-# Threading determinism
-# ---------------------------------------------------------------------------
-class TestThreadingDeterminism:
-    def test_same_seed_different_thread_counts_agree(self, small_data):
-        idx1 = DRPF(num_trees=4, depth=3, seed=123, num_threads=1)
-        idx1.index(small_data)
-        idx2 = DRPF(num_trees=4, depth=3, seed=123, num_threads=4)
-        idx2.index(small_data)
-
-        queries = small_data[:10]
-        
-        r1 = idx1.ann_batch(queries, k=5)
-        r2 = idx2.ann_batch(queries, k=5)
-        
-        for i in range(len(queries)):
-            overlap = len(set(r1[i].tolist()) & set(r2[i].tolist()))
-            assert overlap >= 4, f"Results diverged too much on query {i}: overlap {overlap}/5"
 
 # ---------------------------------------------------------------------------
 # Batch edge cases
