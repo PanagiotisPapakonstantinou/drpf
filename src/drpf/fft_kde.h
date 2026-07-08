@@ -19,10 +19,11 @@
 #include <emmintrin.h>
 #endif
 
-using std::complex;
-
 namespace fftkde
 {
+
+    using std::complex;
+
     /**
      * @brief Utility to find the next power of 2.
      * FFT algorithms typically require the input size to be a power of 2
