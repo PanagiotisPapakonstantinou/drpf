@@ -181,7 +181,7 @@ namespace drpf
                 float diff = x_norm_sqrt - q_norm_sqrt;
                 float lower_bound = diff * diff;
 
-                if (lower_bound >= heap_worst)
+                if (lower_bound > heap_worst)
                     continue;
 
                 float dot = data.row(idx).dot(q);
