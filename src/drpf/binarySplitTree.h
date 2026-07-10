@@ -34,7 +34,7 @@ namespace drpf
 {
 
     /**
-     * @brief 16-byte aligned routing node. Perfectly fits 4 nodes per 64-byte cache line.
+     * @brief 8-byte aligned routing node. Perfectly fits 8 nodes per 64-byte cache line.
      * Contains ONLY the data needed during tree traversal.
      */
     struct RoutingNode
