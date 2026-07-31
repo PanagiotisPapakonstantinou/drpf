@@ -32,8 +32,8 @@ cdef extern from "drpf.h" namespace "drpf":
               bool approximate_search_space_size, float bw_modifier,
               int seed, float min_ratio, int num_threads, Device device_kind) except +
         void index(const float* data_ptr, size_t length, int dimensions) except + nogil
-        ANNResult ann(const float* data, size_t length, int votes, int k) except + nogil
-        ANNResult ann_batch(const float* queries, int n_queries, int dim, int votes, int k) except + nogil
+        ANNResult ann(const float* data, size_t length, int k, int votes) except + nogil
+        ANNResult ann_batch(const float* queries, int n_queries, int dim, int k, int votes) except + nogil
         vector[int] getLeafNodeSizes(int index) except +
         vector[pair[int, int]] getForestIndices(const float* query_ptr, size_t length, int index) except +
 
@@ -196,7 +196,7 @@ cdef class DRPF:
 
         cdef Py_ssize_t n = q.shape[0]
         cdef const float* data_ptr = &q[0]
-        cdef ANNResult result = self.c_drpf.ann(data_ptr, n, votes, k)
+        cdef ANNResult result = self.c_drpf.ann(data_ptr, n, k, votes)
         cdef Py_ssize_t size = result.indices.size()
 
         cdef np.ndarray[np.int32_t, ndim=1] np_indices
@@ -276,7 +276,7 @@ cdef class DRPF:
 
         cdef ANNResult cpp_result
         with nogil:
-            cpp_result = self.c_drpf.ann_batch(q_ptr, n_queries, dim, votes, k,)
+            cpp_result = self.c_drpf.ann_batch(q_ptr, n_queries, dim, k, votes)
 
         cdef np.ndarray[np.int32_t, ndim=2]   np_indices   = np.empty((n_queries, k), dtype=np.int32)
         cdef np.ndarray[np.float32_t, ndim=2] np_distances

@@ -53,9 +53,9 @@ namespace drpf
 
         virtual ~DrpfBackend() = default;
 
-        virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) = 0;
+        virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, , int k, int votes) = 0;
 
-        virtual ANNResult ann(const float *query, int dim, int votes, int k) = 0;
+        virtual ANNResult ann(const float *query, int dim, int k, int votes) = 0;
     };
 
     class DRPFBackendCPU : public DrpfBackend
@@ -98,9 +98,10 @@ namespace drpf
             const Eigen::Ref<const Eigen::RowVectorXf> q,
             const float *__restrict proj_q,
             int k,
+            int votes,
             int *results,
             float *distances_sq,
-            SearchContext &ctx, int votes)
+            SearchContext &ctx)
         {
             int rows = static_cast<int>(data.rows());
             ctx.resize(rows, max_search_buffer_size, k);
@@ -230,7 +231,7 @@ namespace drpf
               projectionMatrix(projMatrix), norms(nrms), forest(f),
               numTrees(trees), max_search_buffer_size(max_buffer) {}
 
-        ANNResult ann(const float *query, int dim, int votes, int k) override
+        ANNResult ann(const float *query, int dim, int k, int votes) override
         {
             Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
             if (dim != data.cols())
@@ -245,15 +246,15 @@ namespace drpf
             out.distances_sq.resize(k);
 
             SearchContext ctx;
-            this->exact_ann(data, q, projectedQuery.data(), k,
+            this->exact_ann(data, q, projectedQuery.data(), k, votes,
                             out.indices.data(),
                             out.distances_sq.data(),
-                            ctx, votes);
+                            ctx);
 
             return out;
         }
 
-        ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) override
+        ANNResult ann_batch(const float *queries, int n_queries, int dim, int k, int votes) override
         {
             Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> data(_data_ptr, _rows, _cols);
             if (dim != data.cols())
@@ -278,10 +279,10 @@ namespace drpf
                 {
                     const Eigen::Map<const Eigen::RowVectorXf> q(queries + i * dim, dim);
                     const float *proj_q = proj_data + static_cast<size_t>(i) * projDim;
-                    this->exact_ann(data, q, proj_q, k,
+                    this->exact_ann(data, q, proj_q, k, votes,
                                     &out.indices[i * k],
                                     &out.distances_sq[i * k],
-                                    ctx, votes);
+                                    ctx);
                 }
             }
 
@@ -410,23 +411,23 @@ namespace drpf
                 (int)cpu_forest.size(), max_buffer);
         }
 
-        ANNResult ann(const float *query, int dim, int votes, int k) override
+        ANNResult ann(const float *query, int dim, int k, int votes) override
         {
-            return _cpu_fallback->ann(query, dim, votes, k);
+            return _cpu_fallback->ann(query, dim, k, votes);
         }
 
-        ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k) override
+        ANNResult ann_batch(const float *queries, int n_queries, int dim int k, int votes, ) override
         {
             constexpr int GPU_CROSSOVER = 64;
             if (n_queries < GPU_CROSSOVER)
             {
-                return _cpu_fallback->ann_batch(queries, n_queries, dim, votes, k);
+                return _cpu_fallback->ann_batch(queries, n_queries, dim, k, votes);
             }
 
             ANNResult out;
             out.indices.resize(n_queries * k);
             out.distances_sq.resize(n_queries * k);
-            search_gpu_batch(_h, queries, n_queries, dim, votes, k,
+            search_gpu_batch(_h, queries, n_queries, dim, k, votes,
                              out.indices.data(), out.distances_sq.data());
             return out;
         }

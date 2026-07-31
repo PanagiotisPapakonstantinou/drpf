@@ -410,7 +410,7 @@ namespace drpf
     }
 
     static void search_chunk(GPUDataHandle &h,
-                             const float *queries, int n_queries, int dim, int votes, int k,
+                             const float *queries, int n_queries, int dim, int k, int votes,
                              int *out_indices, float *out_distances)
     {
         if (k > h.max_k)
@@ -460,7 +460,7 @@ namespace drpf
 
     void search_gpu_batch(
         GPUDataHandle &h,
-        const float *queries, int n_queries, int dim, int votes, int k,
+        const float *queries, int n_queries, int dim, int k, int votes,
         int *out_indices, float *out_distances)
     {
         int offset = 0;
@@ -470,7 +470,7 @@ namespace drpf
             search_chunk(
                 h,
                 queries + (size_t)offset * dim,
-                chunk, dim, votes, k,
+                chunk, dim, k, votes,
                 out_indices + (size_t)offset * k,
                 out_distances + (size_t)offset * k);
             offset += chunk;

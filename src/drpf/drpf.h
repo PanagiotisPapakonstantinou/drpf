@@ -437,18 +437,18 @@ namespace drpf
             return indices;
         }
 
-        ANNResult ann_batch(const float *queries, int n_queries, int dim, int votes, int k)
+        ANNResult ann_batch(const float *queries, int n_queries, int dim, , int k, int votes)
         {
             if (votes <= 0)
                 throw std::invalid_argument("votes must be a positive integer (>= 1).");
-            return backend->ann_batch(queries, n_queries, dim, votes, k);
+            return backend->ann_batch(queries, n_queries, dim, k, votes);
         }
 
-        ANNResult ann(const float *query_ptr, std::size_t length, int votes, int k)
+        ANNResult ann(const float *query_ptr, std::size_t length, int k, int votes)
         {
             if (votes <= 0)
                 throw std::invalid_argument("votes must be a positive integer (>= 1).");
-            return backend->ann(query_ptr, static_cast<int>(length), votes, k);
+            return backend->ann(query_ptr, static_cast<int>(length), k, votes);
         }
     };
 }

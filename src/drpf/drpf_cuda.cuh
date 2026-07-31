@@ -96,7 +96,7 @@ namespace drpf
     //    If n_queries > handle.max_batch, processes in chunks.
     void search_gpu_batch(
         GPUDataHandle &handle,
-        const float *queries, int n_queries, int dim, int votes, int k,
+        const float *queries, int n_queries, int dim, int k, int votes,
         int *out_indices, float *out_distances);
 
     // Computes the random projections via cuBLAS and the squared L2 norms via custom kernel
