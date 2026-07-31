@@ -53,7 +53,7 @@ namespace drpf
 
         virtual ~DrpfBackend() = default;
 
-        virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, , int k, int votes) = 0;
+        virtual ANNResult ann_batch(const float *queries, int n_queries, int dim, int k, int votes) = 0;
 
         virtual ANNResult ann(const float *query, int dim, int k, int votes) = 0;
     };
