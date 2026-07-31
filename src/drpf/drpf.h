@@ -437,7 +437,7 @@ namespace drpf
             return indices;
         }
 
-        ANNResult ann_batch(const float *queries, int n_queries, int dim, , int k, int votes)
+        ANNResult ann_batch(const float *queries, int n_queries, int dim, int k, int votes)
         {
             if (votes <= 0)
                 throw std::invalid_argument("votes must be a positive integer (>= 1).");
