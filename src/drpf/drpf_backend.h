@@ -416,7 +416,7 @@ namespace drpf
             return _cpu_fallback->ann(query, dim, k, votes);
         }
 
-        ANNResult ann_batch(const float *queries, int n_queries, int dim int k, int votes, ) override
+        ANNResult ann_batch(const float *queries, int n_queries, int dim, int k, int votes) override
         {
             constexpr int GPU_CROSSOVER = 64;
             if (n_queries < GPU_CROSSOVER)
