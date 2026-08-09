@@ -90,8 +90,11 @@ cdef class DRPF:
             - 1.0: Standard optimal smoothing.
             - > 1.0: Over-smoothed. Only splits on massive, global clusters.
         seed : int, default=0
-            Base random seed used for generating the random projection matrices. 
-            Ensures deterministic and reproducible index building.
+            Base random seed used for generating the random projection matrices.
+            A value of 0 seeds from OS entropy (`std::random_device`)
+            on every call to `.index()`, so builds are non-deterministic and will
+            differ across repeated calls. Pass a nonzero
+            integer to get deterministic, reproducible index building.
         min_ratio : float, default=0.33333
             The probability mass fraction to ignore at the tails of the distribution 
             when searching for a valley. For example, 0.33 restricts the search 

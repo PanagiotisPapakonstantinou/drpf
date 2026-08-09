@@ -1,23 +1,24 @@
 # DRPF: Dense Random Projection Forest
 [![PyPI](https://img.shields.io/pypi/v/drpf?color=blue)](https://pypi.org/project/drpf/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/drpf)](https://pypi.org/project/drpf/)
-[![CI](https://github.com/Pappan24/drpf/actions/workflows/ci.yml/badge.svg)](https://github.com/Pappan24/drpf/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/Pappan24/drpf/branch/main/graph/badge.svg)](https://codecov.io/gh/Pappan24/drpf)
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/YOUR_PROJECT_ID)](https://app.codacy.com/gh/Pappan24/drpf/dashboard)
+[![CI](https://github.com/PanagiotisPapakonstantinou/drpf/actions/workflows/ci.yml/badge.svg)](https://github.com/PanagiotisPapakonstantinou/drpf/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/PanagiotisPapakonstantinou/drpf/branch/main/graph/badge.svg)](https://codecov.io/gh/PanagiotisPapakonstantinou/drpf)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/YOUR_PROJECT_ID)](https://app.codacy.com/gh/PanagiotisPapakonstantinou/drpf/dashboard)
 [![Documentation Status](https://readthedocs.org/projects/drpf/badge/?version=latest)](https://drpf.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
-This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides efficient and scalable implementations for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
 
-This package is highly suited for large-scale data applications as the focus has been given to the computational efficiency of the implemented search methodologies. All core linear algebra and matrix projection operations are powered by the [Eigen3](https://eigen.tuxfamily.org/) C++ library, ensuring cache-friendly math operations. Furthermore, both index construction and batch query evaluations (`ann_batch`) are fully multi-threaded, utilizing all available CPU cores via OpenMP. The Cython integration allows it to operate directly on NumPy `float32` arrays with zero-copy overhead. The software is provided under the MIT license.
+This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides an efficient and scalable implementation for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
+
+This package is highly suited for large-scale data applications as the focus has been given to the computational efficiency of the implemented search methodologies. All core linear algebra and matrix projection operations are powered by the [Eigen3](https://eigen.tuxfamily.org/) C++ library, ensuring cache-friendly math operations. Furthermore, both index construction and batch query evaluations (`ann_batch`) are fully multi-threaded, utilizing all available CPU cores via OpenMP and include optional CUDA support for accelerated batch queries on GPU backends. The Cython integration allows it to operate directly on NumPy `float32` arrays with zero-copy overhead. The software is provided under the MIT license.
 
 ## Installation
 
-For the installation of the package, the necessary actions and requirements are a version of Python higher or equal to 3.7, a C++20 compatible compiler with OpenMP support, and the execution of the following commands. The Eigen library (3.4.0+) dependency is handled automatically by the setup script.
+For the installation of the package, the necessary actions and requirements are a version of Python higher or equal to 3.8, a C++20 compatible compiler with OpenMP support, and the execution of the following commands. The Eigen library (3.4.0+) dependency is handled automatically by the setup script.
 
 ```bash
-git clone [https://github.com/Pappan24/drpf.git](https://github.com/Pappan24/drpf.git)
+git clone https://github.com/PanagiotisPapakonstantinou/drpf.git
 cd drpf
 pip install .
 ```
@@ -25,11 +26,12 @@ pip install .
 
 ### Requirements
 * Python 3.8+
-* NumPy
-* Cython
 * C++20 compatible compiler with OpenMP
 * Eigen 3.4.0+ (handled automatically)
+* **macOS only:** [Homebrew](https://brew.sh/) is required — `setup.py` uses it to locate or install an OpenMP-capable compiler (LLVM/Clang or GCC) and the `libomp` runtime
 * **Optional:** CUDA Toolkit 11.8+ for GPU backend
+
+Python package dependencies (NumPy, Cython) are listed in [`requirements.txt`](requirements.txt) and are installed automatically via `pip install .`.
 
 ### Optional: GPU Support
 
@@ -50,7 +52,7 @@ To force a CPU-only build even with CUDA installed:
 DRPF_DISABLE_CUDA=1 pip install .
 ```
 
-To target a specific GPU architecture (default is `sm_75`):
+To target a specific GPU architecture:
 
 ```bash
 DRPF_CUDA_ARCH=sm_86 pip install .
@@ -114,3 +116,4 @@ queries = np.random.random((100, 128)).astype(np.float32)
 indices = index.ann_batch(queries, k=10, votes=2)
 
 print(f"Nearest neighbors for first query: {indices[0]}")
+```

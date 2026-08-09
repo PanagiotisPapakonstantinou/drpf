@@ -13,6 +13,20 @@ import numpy as np
 compile_flags = []
 link_flags = []
 
+
+def read_requirements(path="requirements.txt"):
+    """Read pip-installable dependencies from requirements.txt."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    req_path = os.path.join(here, path)
+    if not os.path.exists(req_path):
+        return []
+    with open(req_path, encoding="utf-8") as f:
+        return [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
 # ===============================================================
 # 1. Configuration
 # ===============================================================
@@ -412,5 +426,6 @@ setup(
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.8",
+    install_requires=read_requirements(),
     license="MIT",
 )
