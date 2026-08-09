@@ -17,7 +17,7 @@ The build system auto-detects CUDA when ``nvcc`` is on ``PATH`` or when
 Environment variables:
 
 - ``DRPF_DISABLE_CUDA=1`` — force a CPU-only build.
-- ``DRPF_CUDA_ARCH=sm_86`` — target a specific compute capability (default ``sm_75``).
+- ``DRPF_CUDA_ARCH=sm_86`` — target a specific compute capability.
 - ``DRPF_CUDA_HOST_COMPILER=/path/to/g++`` — override the host compiler used by ``nvcc``.
 
 Using the GPU backend

@@ -12,14 +12,14 @@ Welcome to DRPF's documentation!
 DRPF: Dense Random Projection Forest
 ----------------------------------------------
 
-This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides efficient and scalable implementations for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
+This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides an efficient and scalable implementation for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
 
-This package is highly suited for large-scale data applications as the focus has been given to the computational efficiency of the implemented search methodologies. All core linear algebra and matrix projection operations are powered by the `Eigen3 <https://eigen.tuxfamily.org/>`_ C++ library, ensuring cache-friendly math operations. Furthermore, both index construction and batch query evaluations (``ann_batch``) are fully multi-threaded, utilizing all available CPU cores via OpenMP. The Cython integration allows it to operate directly on NumPy ``float32`` arrays with zero-copy overhead. The software is provided under the MIT license.
+This package is highly suited for large-scale data applications as the focus has been given to the computational efficiency of the implemented search methodologies. All core linear algebra and matrix projection operations are powered by the `Eigen3 <https://eigen.tuxfamily.org/>`_ C++ library, ensuring cache-friendly math operations. Furthermore, both index construction and batch query evaluations (``ann_batch``) are fully multi-threaded, utilizing all available CPU cores via OpenMP and include optional CUDA support for accelerated batch queries on GPU backends. The Cython integration allows it to operate directly on NumPy ``float32`` arrays with zero-copy overhead. The software is provided under the MIT license.
 
 Installation
 ------------
-For the installation of the package, the necessary actions and requirements are a version of Python higher or equal to 3.7, 
-a C++20 compatible compiler with OpenMP support, and the execution of the following commands. 
+For the installation of the package, the necessary actions and requirements are a version of Python higher or equal to 3.8,
+a C++20 compatible compiler with OpenMP support, and the execution of the following commands.
 The Eigen library (3.4.0+) dependency is handled automatically by the setup script.
 
 
@@ -31,11 +31,13 @@ The Eigen library (3.4.0+) dependency is handled automatically by the setup scri
 
 Requirements
 ^^^^^^^^^^^^
-* Python 3.7+
-* NumPy
-* Cython
+* Python 3.8+
 * C++20 compatible compiler with OpenMP
-* Eigen 3.4.0+ (Usually handled automatically by the setup script)
+* Eigen 3.4.0+ (handled automatically)
+* **macOS only:** `Homebrew <https://brew.sh/>`_ is required — ``setup.py`` uses it to locate or install an OpenMP-capable compiler (LLVM/Clang or GCC) and the ``libomp`` runtime
+* **Optional:** CUDA Toolkit 11.8+ for GPU backend
+
+Python package dependencies (NumPy, Cython) are listed in ``requirements.txt`` and are installed automatically via ``pip install .``. See :doc:`gpu_backend` for GPU setup details.
 
 Simple Example Execution
 ------------------------
@@ -79,7 +81,7 @@ The most efficient way to use ``drpf`` is by processing queries in batches. Belo
    # 4. Batch Search
    # Pass multiple queries at once to utilize parallel C++ execution
    queries = np.random.random((100, 128)).astype(np.float32)
-   indices = index.ann_batch(queries, k=10)
+   indices = index.ann_batch(queries, k=10, votes=2)
 
    print(f"Nearest neighbors for first query: {indices[0]}")
 
