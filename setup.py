@@ -231,10 +231,29 @@ if USE_CUDA:
     cuda_runtime_dirs.append(libdir)
     cuda_libraries += ["cudart", "cublas"]
 else:
+    user_wanted_cuda = (
+        os.environ.get("CUDA_HOME")
+        or os.environ.get("CUDA_PATH")
+        or os.environ.get("DRPF_CUDA_ARCH")
+        or os.environ.get("DRPF_CUDA_HOST_COMPILER")
+    )
     if os.environ.get("DRPF_DISABLE_CUDA"):
         print("DRPF_DISABLE_CUDA set; building CPU-only.")
     elif CUDA_HOME is None:
-        print("CUDA not found (nvcc not on PATH); building CPU-only.")
+        if user_wanted_cuda:
+            import warnings
+            warnings.warn(
+                "\n" + "=" * 60 + "\n"
+                "DRPF: CUDA-related environment variable was set, but "
+                "nvcc could not be found.\n"
+                "Building CPU-only. To enable GPU support, install the "
+                "CUDA Toolkit\n(https://developer.nvidia.com/cuda-downloads) "
+                "and ensure nvcc is on PATH.\n"
+                + "=" * 60,
+                stacklevel=2,
+            )
+        else:
+            print("CUDA not found (nvcc not on PATH); building CPU-only.")
     else:
         print("drpf_cuda.cu not present; building CPU-only.")
 
