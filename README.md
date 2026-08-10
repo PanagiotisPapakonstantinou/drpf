@@ -3,11 +3,9 @@
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/drpf)](https://pypi.org/project/drpf/)
 [![CI](https://github.com/PanagiotisPapakonstantinou/drpf/actions/workflows/ci.yml/badge.svg)](https://github.com/PanagiotisPapakonstantinou/drpf/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/PanagiotisPapakonstantinou/drpf/branch/main/graph/badge.svg)](https://codecov.io/gh/PanagiotisPapakonstantinou/drpf)
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/YOUR_PROJECT_ID)](https://app.codacy.com/gh/PanagiotisPapakonstantinou/drpf/dashboard)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/7c3ffd55425a48c4a10bbffe8f147508)](https://app.codacy.com/gh/PanagiotisPapakonstantinou/drpf/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![Documentation Status](https://readthedocs.org/projects/drpf/badge/?version=latest)](https://drpf.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-
 
 This repository presents the DRPF package, an open-source, C++ accelerated Python library that provides an efficient and scalable implementation for Approximate Nearest Neighbor (ANN) search. It advances traditional Random Projection Trees by incorporating Kernel Density Estimation (KDE) to intelligently partition high-dimensional space. Instead of splitting random projections at the median, DRPF uses KDE to find natural "valleys" in the data distribution. This data-driven splitting creates highly balanced trees, reducing boundary errors and improving recall.
 
