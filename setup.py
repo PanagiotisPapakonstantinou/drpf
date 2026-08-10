@@ -17,6 +17,26 @@ compile_flags = []
 link_flags = []
 
 
+def read_long_description(path="README.md"):
+    """Return the README contents for PyPI, or an empty string if it is absent."""
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def resolve_executable(name):
+    """Resolve a tool name to an absolute path via PATH, or raise if absent.
+
+    Passing absolute paths to subprocess avoids depending on how PATH happens to
+    be ordered when the build runs.
+    """
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError(f"Required build tool {name!r} was not found on PATH.")
+    return path
+
+
 def read_requirements(path="requirements.txt"):
     """Read pip-installable dependencies from requirements.txt."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +108,9 @@ def ensure_eigen():
         print(f"Eigen {EIGEN_VERSION} not found. Downloading...")
         os.makedirs(EIGEN_DIR, exist_ok=True)
         zip_path = "eigen.zip"
+        if not EIGEN_URL.startswith("https://"):
+            raise RuntimeError(f"Refusing to fetch Eigen over a non-HTTPS URL: {EIGEN_URL}")
+        
         urllib.request.urlretrieve(EIGEN_URL, zip_path)
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(EIGEN_DIR)
@@ -137,8 +160,10 @@ def get_cuda_arch():
     """Automatically detect the local GPU architecture via nvidia-smi."""
     default_arch = "sm_75"
     try:
+        # nosec B603 - fixed argv, absolute path, no shell
         output = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            [resolve_executable("nvidia-smi"),
+             "--query-gpu=compute_cap", "--format=csv,noheader"],
             universal_newlines=True
         )
         caps = output.strip().split('\n')
@@ -146,7 +171,7 @@ def get_cuda_arch():
             cap_str = caps[0].strip().replace('.', '')
             print(f"Auto-detected GPU architecture: sm_{cap_str}")
             return f"sm_{cap_str}"
-    except Exception:
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
         print(f"Warning: Could not auto-detect GPU architecture. Defaulting to {default_arch}.")
 
     return default_arch
@@ -264,87 +289,73 @@ else:
 # ===============================================================
 # 4. Compiler selection (macOS specific)
 # ===============================================================
-def configure_macos_compiler():
-    """Pick an OpenMP-capable compiler on macOS and return (compile_flags, link_flags).
+BASE_MACOS_FLAGS = [
+    "-std=c++20",
+    "-O3",
+    "-ffast-math",
+    "-funroll-loops",
+    "-fno-strict-aliasing",
+    "-DNDEBUG",
+]
 
-    Preference order:  Homebrew GCC > Homebrew LLVM/Clang > Apple Clang + libomp.
-    """
-    # 0) Respect explicit user choice first
-    if os.environ.get("CC") and os.environ.get("CXX"):
-        print(f"Using user-specified compiler: {os.environ['CC']} / {os.environ['CXX']}")
-        return [], []
 
-    try:
-        brew_prefix = subprocess.check_output(["brew", "--prefix"], text=True).strip()
-    except Exception as exc:
-        raise RuntimeError("Homebrew is required on macOS for OpenMP support.") from exc
+def ensure_libomp(omp_root):
+    """Install libomp via Homebrew if it is not already present."""
+    if not os.path.exists(omp_root):
+        print("libomp not found. Attempting to install via Homebrew...")
+        subprocess.check_call([resolve_executable("brew"), "install", "libomp"])
 
-    brew_bin = os.path.join(brew_prefix, "bin")
 
-    # 1) Prefer Homebrew LLVM/Clang on macOS
-    llvm_root = os.path.join(brew_prefix, "opt", "llvm")
+def macos_llvm_flags(llvm_root, omp_root):
+    """Compile/link flags for Homebrew LLVM Clang, or None if it is not installed."""
     llvm_clang = os.path.join(llvm_root, "bin", "clang")
     llvm_clangxx = os.path.join(llvm_root, "bin", "clang++")
-    omp_root = os.path.join(brew_prefix, "opt", "libomp")
+    if not (os.path.exists(llvm_clang) and os.path.exists(llvm_clangxx)):
+        return None
 
-    if os.path.exists(llvm_clang) and os.path.exists(llvm_clangxx):
-        if not os.path.exists(omp_root):
-            print("libomp not found. Attempting to install via Homebrew...")
-            subprocess.check_call(["brew", "install", "libomp"])
+    ensure_libomp(omp_root)
+    print(f"Using Homebrew LLVM Clang: {llvm_clangxx}")
+    os.environ["CC"] = llvm_clang
+    os.environ["CXX"] = llvm_clangxx
 
-        print(f"Using Homebrew LLVM Clang: {llvm_clangxx}")
-        os.environ["CC"] = llvm_clang
-        os.environ["CXX"] = llvm_clangxx
+    return (
+        BASE_MACOS_FLAGS + [
+            "-fopenmp",
+            f"-I{llvm_root}/include",
+            f"-I{omp_root}/include",
+        ],
+        [
+            "-fopenmp",
+            f"-L{llvm_root}/lib",
+            f"-L{omp_root}/lib",
+            "-lomp",
+        ],
+    )
 
-        return (
-            [
-                "-std=c++20",
-                "-O3",
-                "-ffast-math",
-                "-funroll-loops",
-                "-fno-strict-aliasing",
-                "-DNDEBUG",
-                "-fopenmp",
-                f"-I{llvm_root}/include",
-                f"-I{omp_root}/include",
-            ],
-            [
-                "-fopenmp",
-                f"-L{llvm_root}/lib",
-                f"-L{omp_root}/lib",
-                "-lomp",
-            ],
-        )
 
-    # 2) Fallback to Homebrew GCC, but pick newest by numeric version
+def macos_gcc_flags(brew_bin):
+    """Compile/link flags for the newest Homebrew GCC, or None if none is installed."""
     try:
         gcc_candidates = [f for f in os.listdir(brew_bin) if re.fullmatch(r"g\+\+-\d+", f)]
     except FileNotFoundError:
         gcc_candidates = []
 
-    if gcc_candidates:
-        gcc_candidates.sort(key=lambda x: int(x.split("-")[-1]), reverse=True)
-        gpp_bin = os.path.join(brew_bin, gcc_candidates[0])
-        gcc_bin = gpp_bin.replace("g++", "gcc")
+    if not gcc_candidates:
+        return None
 
-        print(f"Using Homebrew GCC: {gpp_bin}")
-        os.environ["CC"] = gcc_bin
-        os.environ["CXX"] = gpp_bin
+    gcc_candidates.sort(key=lambda x: int(x.split("-")[-1]), reverse=True)
+    gpp_bin = os.path.join(brew_bin, gcc_candidates[0])
+    gcc_bin = gpp_bin.replace("g++", "gcc")
 
-        return (
-            [
-                "-std=c++20",
-                "-O3",
-                "-ffast-math",
-                "-funroll-loops",
-                "-fno-strict-aliasing",
-                "-DNDEBUG",
-                "-fopenmp",
-            ],
-            ["-fopenmp"],
-        )
+    print(f"Using Homebrew GCC: {gpp_bin}")
+    os.environ["CC"] = gcc_bin
+    os.environ["CXX"] = gpp_bin
 
-    # 3) Last resort: Apple Clang + libomp
+    return (BASE_MACOS_FLAGS + ["-fopenmp"], ["-fopenmp"])
+
+
+def macos_apple_clang_flags(omp_root):
+    """Compile/link flags for Apple Clang plus Homebrew libomp (last resort)."""
     print("Homebrew LLVM/GCC not found. Falling back to Apple Clang...")
     clang_bin = shutil.which("clang")
     clangpp_bin = shutil.which("clang++")
@@ -352,21 +363,12 @@ def configure_macos_compiler():
     if not clang_bin or not clangpp_bin:
         raise RuntimeError("Apple Clang not found. Please install Xcode Command Line Tools.")
 
-    if not os.path.exists(omp_root):
-        print("libomp not found. Attempting to install via Homebrew...")
-        subprocess.check_call(["brew", "install", "libomp"])
-
+    ensure_libomp(omp_root)
     os.environ["CC"] = clang_bin
     os.environ["CXX"] = clangpp_bin
 
     return (
-        [
-            "-std=c++20",
-            "-O3",
-            "-ffast-math",
-            "-funroll-loops",
-            "-fno-strict-aliasing",
-            "-DNDEBUG",
+        BASE_MACOS_FLAGS + [
             "-Xpreprocessor",
             "-fopenmp",
             f"-I{omp_root}/include",
@@ -375,6 +377,34 @@ def configure_macos_compiler():
             f"-L{omp_root}/lib",
             "-lomp",
         ],
+    )
+
+
+def configure_macos_compiler():
+    """Pick an OpenMP-capable compiler on macOS and return (compile_flags, link_flags).
+
+    Preference order:  Homebrew LLVM/Clang > Homebrew GCC > Apple Clang + libomp.
+    """
+
+    if os.environ.get("CC") and os.environ.get("CXX"):
+        print(f"Using user-specified compiler: {os.environ['CC']} / {os.environ['CXX']}")
+        return [], []
+
+    try:
+        brew_prefix = subprocess.check_output(
+            [resolve_executable("brew"), "--prefix"], text=True
+        ).strip()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Homebrew is required on macOS for OpenMP support.") from exc
+
+    brew_bin = os.path.join(brew_prefix, "bin")
+    llvm_root = os.path.join(brew_prefix, "opt", "llvm")
+    omp_root = os.path.join(brew_prefix, "opt", "libomp")
+
+    return (
+        macos_llvm_flags(llvm_root, omp_root)
+        or macos_gcc_flags(brew_bin)
+        or macos_apple_clang_flags(omp_root)
     )
 
 # ===============================================================
@@ -441,7 +471,7 @@ setup(
     author="Panagiotis Papakonstantinou",
     author_email="panagiotispapakonstantinou15@gmail.com",
     description="Dense Random Projection Forest for Fast ANN Search",
-    long_description=open("README.md", encoding="utf-8").read() if os.path.exists("README.md") else "",
+    long_description=read_long_description(),
     long_description_content_type="text/markdown",
     url="https://github.com/PanagiotisPapakonstantinou/drpf",
     packages=find_packages(where="src"),
