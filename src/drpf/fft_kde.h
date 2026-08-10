@@ -632,40 +632,28 @@ namespace fftkde
          * @brief Calculates bandwidth (smoothing parameter).
          * Implements Silverman's Rule of Thumb.
          */
-        // Validates finiteness and returns [min, max] over data_ in one pass.
-        void checkFiniteRange(T &data_min, T &data_max) const
-        {
-            data_min = data_[0];
-            data_max = data_[0];
-            for (const T &v : data_)
-            {
-                if (!std::isfinite(static_cast<long double>(v)))
-                    throw std::invalid_argument("Data contains NaN or Inf");
-                if (v < data_min)
-                    data_min = v;
-                if (v > data_max)
-                    data_max = v;
-            }
-        }
-
-        // Clamps a raw bandwidth estimate away from zero/degenerate values.
-        static T stabilizeBandwidth(T raw_h, T min_scale, T eps)
-        {
-            if (!(raw_h > T(0)))
-                return std::max<T>(min_scale, eps * T(1e3));
-            if (raw_h < min_scale)
-                return min_scale;
-            return raw_h;
-        }
-
         void init_bandwidth()
         {
             const size_t n = data_.size();
             if (n < 2)
                 throw std::invalid_argument("Need at least two points");
 
-            T data_min, data_max;
-            checkFiniteRange(data_min, data_max);
+            bool has_nan = false;
+            T data_min = data_[0], data_max = data_[0];
+            for (const T &v : data_)
+            {
+                if (!std::isfinite(static_cast<long double>(v)))
+                {
+                    has_nan = true;
+                    break;
+                }
+                if (v < data_min)
+                    data_min = v;
+                if (v > data_max)
+                    data_max = v;
+            }
+            if (has_nan)
+                throw std::invalid_argument("Data contains NaN or Inf");
 
             T sd = std_dev(data_);
 
@@ -701,7 +689,10 @@ namespace fftkde
             if (sd > T(0))
                 min_scale = std::min<T>(min_scale, sd);
 
-            raw_h = stabilizeBandwidth(raw_h, min_scale, eps);
+            if (!(raw_h > T(0)))
+                raw_h = std::max<T>(min_scale, eps * T(1e3));
+            else if (raw_h < min_scale)
+                raw_h = min_scale;
 
             h_ = raw_h * raw_h; // Store as variance
 
