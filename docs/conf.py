@@ -3,13 +3,11 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-import os
-import sys
 from importlib import metadata
 
 # -- Project information -----------------------------------------------------
 project = 'DRPF'
-copyright = '2026, Panagiotis Papakonstantinou'
+project_copyright = '2026, Panagiotis Papakonstantinou'
 author = 'Panagiotis Papakonstantinou'
 
 # Dynamically fetch the version from the installed package
