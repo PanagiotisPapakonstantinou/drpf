@@ -5,6 +5,8 @@ Assumes the extension has been compiled and is importable as `drpf`.
 Run with: pytest tests/test_drpf.py -v
 """
 
+import gc
+
 import pytest  # type: ignore
 import numpy as np
 
@@ -79,6 +81,8 @@ def indexed_drpf_device(small_data, device):
 # Construction
 # ---------------------------------------------------------------------------
 class TestInit:
+    """Constructor smoke tests."""
+
     def test_default_construction(self):
         idx = DRPF()
         assert idx is not None
@@ -92,6 +96,8 @@ class TestInit:
 # Indexing & guard rails
 # ---------------------------------------------------------------------------
 class TestIndex:
+    """index() input handling and guard rails before indexing."""
+
     def test_index_accepts_float32(self, small_data):
         assert small_data.dtype == np.float32
         idx = DRPF(seed=0)
@@ -131,6 +137,8 @@ class TestIndex:
 # Single-query ANN
 # ---------------------------------------------------------------------------
 class TestANN:
+    """Single-query ann() behavior."""
+
     def test_returns_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
         result = idx.ann(data[0], k=5)
@@ -188,6 +196,8 @@ class TestANN:
 # Batch ANN
 # ---------------------------------------------------------------------------
 class TestAnnBatch:
+    """Batch ann_batch() behavior."""
+
     def test_returns_2d_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
         result = idx.ann_batch(data[:10], k=5)
@@ -249,6 +259,8 @@ class TestAnnBatch:
 # Leaf sizes
 # ---------------------------------------------------------------------------
 class TestLeafSizes:
+    """get_leaf_sizes() behavior and leaf-structure sanity checks."""
+
     def test_returns_ndarray(self, indexed_drpf):
         idx, _ = indexed_drpf
         sizes = idx.get_leaf_sizes()
@@ -307,6 +319,8 @@ class TestLeafSizes:
 # Forest indices
 # ---------------------------------------------------------------------------
 class TestForestIndices:
+    """get_forest_indices() behavior."""
+
     def test_returns_2d_ndarray(self, indexed_drpf):
         idx, data = indexed_drpf
         result = idx.get_forest_indices(data[0])
@@ -349,6 +363,8 @@ class TestForestIndices:
 # Edge cases
 # ---------------------------------------------------------------------------
 class TestEdgeCases:
+    """Small/degenerate dataset edge cases."""
+
     def test_single_point_dataset(self):
         """A dataset with one point should not crash."""
         data = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
@@ -387,6 +403,8 @@ class TestEdgeCases:
 # Stats printing
 # ---------------------------------------------------------------------------
 class TestPrintLeafStats:
+    """print_leaf_stats() output."""
+
     def test_smoke(self, indexed_drpf, capsys):
         idx, _ = indexed_drpf
         idx.print_leaf_stats(name="TestDRPF")
@@ -411,6 +429,8 @@ class TestPrintLeafStats:
 # GPU backend
 # ---------------------------------------------------------------------------
 class TestGPUBackend:
+    """GPU device selection and CPU/GPU parity."""
+
     def test_gpu_constructor_accepts_device_kwarg(self):
         """Either constructs successfully (CUDA build) or raises a clear RuntimeError."""
         try:
@@ -474,6 +494,8 @@ class TestGPUBackend:
 # ---------------------------------------------------------------------------
 
 class TestConstructorValidation:
+    """Constructor parameter validation."""
+
     def test_num_trees_zero_raises(self):
         with pytest.raises(ValueError):
             DRPF(num_trees=0)
@@ -520,6 +542,8 @@ class TestConstructorValidation:
 # Votes threshold
 # ---------------------------------------------------------------------------
 class TestVotes:
+    """votes parameter validation."""
+
     def test_votes_zero_raises(self, indexed_drpf):
         idx, data = indexed_drpf
         with pytest.raises(ValueError, match="votes"):
@@ -540,6 +564,8 @@ class TestVotes:
 # return_distances
 # ---------------------------------------------------------------------------
 class TestReturnDistances:
+    """return_distances=True behavior for ann()/ann_batch()."""
+
     def test_ann_returns_tuple(self, indexed_drpf):
         idx, data = indexed_drpf
         result = idx.ann(data[0], k=5, return_distances=True)
@@ -611,6 +637,8 @@ class TestReturnDistances:
 # Out-of-range tree index handling
 # ---------------------------------------------------------------------------
 class TestInvalidTreeIndex:
+    """Out-of-range tree index handling."""
+
     def test_get_leaf_sizes_out_of_range_raises(self, indexed_drpf):
         idx, _ = indexed_drpf
         with pytest.raises(ValueError):
@@ -636,6 +664,8 @@ class TestInvalidTreeIndex:
 # Structural parameters: no_of_ss / approximate_search_space_size
 # ---------------------------------------------------------------------------
 class TestStructuralParams:
+    """no_of_ss / approximate_search_space_size structural effects."""
+
     def test_explicit_no_of_ss_overrides_auto(self, small_data):
         """Explicit no_of_ss should change leaf structure vs. the auto-derived default
         when using depth-based splitting."""
@@ -676,12 +706,12 @@ class TestStructuralParams:
 # Memory safety of the zero-copy data pointer
 # ---------------------------------------------------------------------------
 class TestMemorySafety:
+    """Zero-copy data pointer lifetime safety."""
+
     def test_index_keeps_data_alive_after_source_deleted(self):
         """DRPF holds a raw pointer into the indexed array; the extension must
         keep its own reference alive so queries still work after the caller
         drops their reference and it's garbage collected."""
-        import gc
-
         rng = np.random.default_rng(0)
         data = rng.standard_normal((100, 8)).astype(np.float32)
         query = data[0].copy()
@@ -715,6 +745,8 @@ class TestMemorySafety:
 # Non-contiguous query vectors
 # ---------------------------------------------------------------------------
 class TestNonContiguousQuery:
+    """Non-contiguous query vector handling."""
+
     def test_ann_accepts_strided_query_view(self, indexed_drpf):
         """A column slice of a 2D array is a non-contiguous 1D memoryview;
         ann() should still accept it."""
@@ -730,6 +762,8 @@ class TestNonContiguousQuery:
 # Re-indexing an existing instance
 # ---------------------------------------------------------------------------
 class TestReindexing:
+    """Re-indexing an existing DRPF instance."""
+
     def test_index_can_be_called_a_second_time(self):
         rng = np.random.default_rng(0)
         data1 = rng.standard_normal((100, 8)).astype(np.float32)
@@ -761,6 +795,8 @@ class TestReindexing:
 # Batch edge cases
 # ---------------------------------------------------------------------------
 class TestEmptyBatch:
+    """Empty-batch edge cases."""
+
     def test_zero_queries(self, indexed_drpf):
         idx, data = indexed_drpf
         empty = np.empty((0, data.shape[1]), dtype=np.float32)
@@ -772,6 +808,8 @@ class TestEmptyBatch:
 # plot_query_leaves (visualization smoke test)
 # ---------------------------------------------------------------------------
 class TestPlotQueryLeaves:
+    """plot_query_leaves() visualization smoke tests."""
+
     def test_smoke_pca(self, indexed_drpf, monkeypatch):
         pytest.importorskip("matplotlib")
         pytest.importorskip("sklearn")

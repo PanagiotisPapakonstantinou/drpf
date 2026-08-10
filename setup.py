@@ -1,3 +1,5 @@
+"""Build script for the drpf Cython/C++ extension (Eigen + optional CUDA backend)."""
+
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 import urllib.request
@@ -6,7 +8,8 @@ import os
 import subprocess
 import sys
 import shutil
-import re 
+import re
+import warnings
 import numpy as np
 
 # Global variables for compiler flags
@@ -62,6 +65,7 @@ def eigen_version_at_least(eigen_path, required=(3, 4, 0)):
 # 2. Detect or download Eigen
 # ===============================================================
 def ensure_eigen():
+    """Locate a usable Eigen ≥ 3.4.0 install, or download it into src/third_party/eigen."""
     eigen_env = os.environ.get("EIGEN_PATH")
     if eigen_env and os.path.exists(os.path.join(eigen_env, "Eigen")):
         if eigen_version_at_least(eigen_env, (3, 4, 0)):
@@ -142,9 +146,9 @@ def get_cuda_arch():
             cap_str = caps[0].strip().replace('.', '')
             print(f"Auto-detected GPU architecture: sm_{cap_str}")
             return f"sm_{cap_str}"
-    except Exception as e:
+    except Exception:
         print(f"Warning: Could not auto-detect GPU architecture. Defaulting to {default_arch}.")
-    
+
     return default_arch
 
 
@@ -215,11 +219,11 @@ if USE_CUDA:
     host_cxx = os.environ.get("DRPF_CUDA_HOST_COMPILER")
 
     build_cuda_object(
-        NVCC, 
-        CU_SRC, 
-        cuda_obj, 
-        arch=arch, 
-        host_compiler=host_cxx, 
+        NVCC,
+        CU_SRC,
+        cuda_obj,
+        arch=arch,
+        host_compiler=host_cxx,
         include_dirs=[os.path.join(CUDA_HOME, "include")]
     )
 
@@ -241,7 +245,6 @@ else:
         print("DRPF_DISABLE_CUDA set; building CPU-only.")
     elif CUDA_HOME is None:
         if user_wanted_cuda:
-            import warnings
             warnings.warn(
                 "\n" + "=" * 60 + "\n"
                 "DRPF: CUDA-related environment variable was set, but "
@@ -259,20 +262,22 @@ else:
 
 
 # ===============================================================
-# 3. Compiler selection (macOS specific)
+# 4. Compiler selection (macOS specific)
 # ===============================================================
 def configure_macos_compiler():
-    global compile_flags, link_flags
+    """Pick an OpenMP-capable compiler on macOS and return (compile_flags, link_flags).
 
+    Preference order:  Homebrew GCC > Homebrew LLVM/Clang > Apple Clang + libomp.
+    """
     # 0) Respect explicit user choice first
     if os.environ.get("CC") and os.environ.get("CXX"):
         print(f"Using user-specified compiler: {os.environ['CC']} / {os.environ['CXX']}")
-        return
+        return [], []
 
     try:
         brew_prefix = subprocess.check_output(["brew", "--prefix"], text=True).strip()
-    except Exception:
-        raise RuntimeError("Homebrew is required on macOS for OpenMP support.")
+    except Exception as exc:
+        raise RuntimeError("Homebrew is required on macOS for OpenMP support.") from exc
 
     brew_bin = os.path.join(brew_prefix, "bin")
 
@@ -291,24 +296,25 @@ def configure_macos_compiler():
         os.environ["CC"] = llvm_clang
         os.environ["CXX"] = llvm_clangxx
 
-        compile_flags = [
-            "-std=c++20",
-            "-O3",
-            "-ffast-math",
-            "-funroll-loops",
-            "-fno-strict-aliasing",
-            "-DNDEBUG",
-            "-fopenmp",
-            f"-I{llvm_root}/include",
-            f"-I{omp_root}/include",
-        ]
-        link_flags = [
-            "-fopenmp",
-            f"-L{llvm_root}/lib",
-            f"-L{omp_root}/lib",
-            "-lomp",
-        ]
-        return
+        return (
+            [
+                "-std=c++20",
+                "-O3",
+                "-ffast-math",
+                "-funroll-loops",
+                "-fno-strict-aliasing",
+                "-DNDEBUG",
+                "-fopenmp",
+                f"-I{llvm_root}/include",
+                f"-I{omp_root}/include",
+            ],
+            [
+                "-fopenmp",
+                f"-L{llvm_root}/lib",
+                f"-L{omp_root}/lib",
+                "-lomp",
+            ],
+        )
 
     # 2) Fallback to Homebrew GCC, but pick newest by numeric version
     try:
@@ -325,17 +331,18 @@ def configure_macos_compiler():
         os.environ["CC"] = gcc_bin
         os.environ["CXX"] = gpp_bin
 
-        compile_flags = [
-            "-std=c++20",
-            "-O3",
-            "-ffast-math",
-            "-funroll-loops",
-            "-fno-strict-aliasing",
-            "-DNDEBUG",
-            "-fopenmp",
-        ]
-        link_flags = ["-fopenmp"]
-        return
+        return (
+            [
+                "-std=c++20",
+                "-O3",
+                "-ffast-math",
+                "-funroll-loops",
+                "-fno-strict-aliasing",
+                "-DNDEBUG",
+                "-fopenmp",
+            ],
+            ["-fopenmp"],
+        )
 
     # 3) Last resort: Apple Clang + libomp
     print("Homebrew LLVM/GCC not found. Falling back to Apple Clang...")
@@ -352,27 +359,29 @@ def configure_macos_compiler():
     os.environ["CC"] = clang_bin
     os.environ["CXX"] = clangpp_bin
 
-    compile_flags = [
-        "-std=c++20",
-        "-O3",
-        "-ffast-math",
-        "-funroll-loops",
-        "-fno-strict-aliasing",
-        "-DNDEBUG",
-        "-Xpreprocessor",
-        "-fopenmp",
-        f"-I{omp_root}/include",
-    ]
-    link_flags = [
-        f"-L{omp_root}/lib",
-        "-lomp",
-    ]
+    return (
+        [
+            "-std=c++20",
+            "-O3",
+            "-ffast-math",
+            "-funroll-loops",
+            "-fno-strict-aliasing",
+            "-DNDEBUG",
+            "-Xpreprocessor",
+            "-fopenmp",
+            f"-I{omp_root}/include",
+        ],
+        [
+            f"-L{omp_root}/lib",
+            "-lomp",
+        ],
+    )
 
 # ===============================================================
-# 4. Apply platform flags
+# 5. Apply platform flags
 # ===============================================================
 if sys.platform == "darwin":
-    configure_macos_compiler()
+    compile_flags, link_flags = configure_macos_compiler()
 elif sys.platform.startswith("linux"):
     compile_flags = [
         "-std=c++20", "-O3", "-march=native", "-ffast-math",
@@ -399,7 +408,7 @@ if USE_CUDA:
             link_flags.append(f"-Wl,-rpath,{d}")
 
 # ===============================================================
-# 5. Extension module definition
+# 6. Extension module definition
 # ===============================================================
 ext = Extension(
     "drpf.drpf",
@@ -408,7 +417,7 @@ ext = Extension(
     include_dirs=[
         eigen_include,
         np.get_include(),
-    ] + cuda_include_dirs,       
+    ] + cuda_include_dirs,
 
     define_macros=[
         ("EIGEN_NO_DEBUG", None),
@@ -416,7 +425,7 @@ ext = Extension(
     ],
 
     library_dirs=cuda_library_dirs,
-    libraries=cuda_libraries,      
+    libraries=cuda_libraries,
     runtime_library_dirs=cuda_runtime_dirs if sys.platform != "win32" else None,
     extra_objects=cuda_objects,
     extra_compile_args=compile_flags,
@@ -424,7 +433,7 @@ ext = Extension(
 )
 
 # ===============================================================
-# 6. Build
+# 7. Build
 # ===============================================================
 setup(
     name="drpf",
