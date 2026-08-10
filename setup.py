@@ -434,7 +434,7 @@ setup(
     description="Dense Random Projection Forest for Fast ANN Search",
     long_description=open("README.md", encoding="utf-8").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
-    url="https://github.com/Pappan24/drpf",
+    url="https://github.com/PanagiotisPapakonstantinou/drpf",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     ext_modules=cythonize([ext], compiler_directives={"language_level": "3"}),

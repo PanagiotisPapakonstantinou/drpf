@@ -117,3 +117,12 @@ indices = index.ann_batch(queries, k=10, votes=2)
 
 print(f"Nearest neighbors for first query: {indices[0]}")
 ```
+
+### Optional: Visualization
+
+`plot_query_leaves()` visualizes a query and its candidate leaf points in 2D.
+It requires extra dependencies not installed by default:
+
+```bash
+pip install matplotlib scikit-learn umap-learn
+```

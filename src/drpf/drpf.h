@@ -222,6 +222,21 @@ namespace drpf
             return forest;
         }
 
+        static void validateParams(int num_trees, int split_depth, int no_of_ss,
+                                    float bw_modifier, float min_ratio)
+        {
+            if (num_trees <= 0)
+                throw std::invalid_argument("num_trees must be greater than 0.");
+            if (split_depth <= 0)
+                throw std::invalid_argument("split_depth must be greater than 0.");
+            if (no_of_ss < 0)
+                throw std::invalid_argument("no_of_ss (search space) cannot be negative.");
+            if (bw_modifier <= 0.0f)
+                throw std::invalid_argument("bw_modifier must be strictly positive (> 0.0).");
+            if (min_ratio <= 0.0f || min_ratio >= 0.5f)
+                throw std::invalid_argument("min_ratio must be between 0.0 and 0.5 (exclusive).");
+        }
+
         void compact()
         {
             int packed_depth = true_depth;
@@ -264,20 +279,7 @@ namespace drpf
               approximate_search_space_size(approximate_search_space_size),
               seed(seed), split_data_bandwidth(bw_modifier), min_ratio(min_ratio), device_kind(device_kind)
         {
-            if (num_trees <= 0)
-                throw std::invalid_argument("num_trees must be greater than 0.");
-
-            if (split_depth <= 0)
-                throw std::invalid_argument("split_depth must be greater than 0.");
-
-            if (no_of_ss < 0)
-                throw std::invalid_argument("no_of_ss (search space) cannot be negative.");
-
-            if (bw_modifier <= 0.0f)
-                throw std::invalid_argument("bw_modifier must be strictly positive (> 0.0).");
-
-            if (min_ratio <= 0.0f || min_ratio >= 0.5f)
-                throw std::invalid_argument("min_ratio must be between 0.0 and 0.5 (exclusive).");
+            validateParams(num_trees, split_depth, no_of_ss, bw_modifier, min_ratio);
 
             if (num_threads > 0)
             {

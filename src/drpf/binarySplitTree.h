@@ -246,6 +246,13 @@ namespace drpf
             return true_depth;
         }
 
+        // Records a node as final: updates the running true_depth / max_leaf_size stats.
+        void recordLeafStats(int node_idx)
+        {
+            true_depth = std::max(true_depth, (int)leafDataPool[node_idx].depth);
+            max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[node_idx].getSize());
+        }
+
         void splitTreeDepth(int root_idx)
         {
             std::vector<int> current_leaves;
@@ -259,28 +266,24 @@ namespace drpf
 
                 for (int curr_idx : current_leaves)
                 {
-                    if (leafDataPool[curr_idx].getSize() >= threshold)
+                    if (leafDataPool[curr_idx].getSize() < threshold)
                     {
-                        splitNode(curr_idx);
-                        RoutingNode &rNode = routingPool[curr_idx];
+                        recordLeafStats(curr_idx);
+                        continue;
+                    }
 
-                        if (rNode.left != -1)
-                        {
-                            stop = false;
-                            next_leaves.push_back(rNode.left);
-                            next_leaves.push_back(rNode.left + 1);
-                        }
-                        else
-                        {
-                            true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
-                            max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
-                        }
-                    }
-                    else
+                    splitNode(curr_idx);
+                    RoutingNode &rNode = routingPool[curr_idx];
+
+                    if (rNode.left == -1)
                     {
-                        true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
-                        max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
+                        recordLeafStats(curr_idx);
+                        continue;
                     }
+
+                    stop = false;
+                    next_leaves.push_back(rNode.left);
+                    next_leaves.push_back(rNode.left + 1);
                 }
 
                 current_leaves = next_leaves;
@@ -289,10 +292,7 @@ namespace drpf
             }
 
             for (int curr_idx : current_leaves)
-            {
-                true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
-                max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
-            }
+                recordLeafStats(curr_idx);
         }
 
         void splitTreeBag(int root_idx)
@@ -312,8 +312,7 @@ namespace drpf
 
                 if (leafDataPool[curr_idx].getSize() <= target_leaf_size)
                 {
-                    true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
-                    max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
+                    recordLeafStats(curr_idx);
                     continue;
                 }
 
@@ -327,8 +326,7 @@ namespace drpf
                 }
                 else
                 {
-                    true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
-                    max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
+                    recordLeafStats(curr_idx);
                 }
             }
         }

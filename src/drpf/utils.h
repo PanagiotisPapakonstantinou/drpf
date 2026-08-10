@@ -50,6 +50,23 @@ namespace drpf
      * Selects the highest available instruction set at compile time.
      */
 
+#if defined(__AVX__)
+    /**
+     * @brief Horizontally reduces a 256-bit accumulator (8 floats) to a scalar sum.
+     * Shared by the AVX+FMA and AVX-only squaredDistance implementations below.
+     */
+    inline float reduceAVX(__m256 acc) noexcept
+    {
+        __m128 low = _mm256_castps256_ps128(acc);
+        __m128 high = _mm256_extractf128_ps(acc, 1);
+        __m128 sum128 = _mm_add_ps(low, high);
+
+        sum128 = _mm_hadd_ps(sum128, sum128);
+        sum128 = _mm_hadd_ps(sum128, sum128);
+        return _mm_cvtss_f32(sum128);
+    }
+#endif
+
 #if defined(__AVX512F__)
 
     /**
@@ -159,16 +176,7 @@ namespace drpf
 
         // Reduce AVX registers to a single float
         __m256 acc = _mm256_add_ps(acc0, acc1);
-
-        // Split 256-bit register into two 128-bit lanes and add
-        __m128 low = _mm256_castps256_ps128(acc);
-        __m128 high = _mm256_extractf128_ps(acc, 1);
-        __m128 sum128 = _mm_add_ps(low, high);
-
-        // Horizontal adds to sum up the 4 floats in the XMM register
-        sum128 = _mm_hadd_ps(sum128, sum128);
-        sum128 = _mm_hadd_ps(sum128, sum128);
-        sum += _mm_cvtss_f32(sum128);
+        sum += reduceAVX(acc);
 
         return sum;
     }
@@ -196,14 +204,7 @@ namespace drpf
         }
 
         // Horizontal Reduction logic
-        __m128 low = _mm256_castps256_ps128(acc);
-        __m128 high = _mm256_extractf128_ps(acc, 1);
-        __m128 sum128 = _mm_add_ps(low, high);
-
-        sum128 = _mm_hadd_ps(sum128, sum128);
-        sum128 = _mm_hadd_ps(sum128, sum128);
-
-        float sum = _mm_cvtss_f32(sum128);
+        float sum = reduceAVX(acc);
 
         // Scalar tail
         for (; i < size; ++i)

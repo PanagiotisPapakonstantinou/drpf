@@ -93,19 +93,13 @@ namespace drpf
             }
         };
 
-        FORCE_INLINE void exact_ann(
-            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
-            const Eigen::Ref<const Eigen::RowVectorXf> q,
+        // Phase 1: votes leaf membership across the forest into ctx.candidates.
+        // Returns the number of candidates gathered.
+        FORCE_INLINE int gatherCandidates(
             const float *__restrict proj_q,
-            int k,
             int votes,
-            int *results,
-            float *distances_sq,
             SearchContext &ctx)
         {
-            int rows = static_cast<int>(data.rows());
-            ctx.resize(rows, max_search_buffer_size, k);
-
             ctx.generation++;
             if (ctx.generation >= (1 << 24))
             {
@@ -150,19 +144,25 @@ namespace drpf
                 }
             }
 
-            int num_cands = static_cast<int>(ctx.candidates.size());
+            return static_cast<int>(ctx.candidates.size());
+        }
 
-            if (num_cands == 0)
-            {
-                std::fill(results, results + k, -1);
-                std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
-                return;
-            }
-
+        // Phase 2: exact-distance refinement of ctx.candidates into the top-k heap,
+        // written out to results/distances_sq (padded with -1 / FLT_MAX past k_eff).
+        FORCE_INLINE void refineCandidates(
+            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
+            const Eigen::Ref<const Eigen::RowVectorXf> q,
+            int num_cands,
+            int k,
+            int *results,
+            float *distances_sq,
+            SearchContext &ctx)
+        {
             float q_norm = q.squaredNorm();
             float q_norm_sqrt = std::sqrt(q_norm);
             int dim = static_cast<int>(data.cols());
             const float *data_raw = data.data();
+            const int prefetch_dist = 32;
 
             ctx.heap.clear();
             float heap_worst = std::numeric_limits<float>::max();
@@ -218,6 +218,31 @@ namespace drpf
                 results[i] = ctx.heap[i].second;
                 distances_sq[i] = ctx.heap[i].first;
             }
+        }
+
+        FORCE_INLINE void exact_ann(
+            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
+            const Eigen::Ref<const Eigen::RowVectorXf> q,
+            const float *__restrict proj_q,
+            int k,
+            int votes,
+            int *results,
+            float *distances_sq,
+            SearchContext &ctx)
+        {
+            int rows = static_cast<int>(data.rows());
+            ctx.resize(rows, max_search_buffer_size, k);
+
+            int num_cands = gatherCandidates(proj_q, votes, ctx);
+
+            if (num_cands == 0)
+            {
+                std::fill(results, results + k, -1);
+                std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
+                return;
+            }
+
+            refineCandidates(data, q, num_cands, k, results, distances_sq, ctx);
         }
 
     public:
