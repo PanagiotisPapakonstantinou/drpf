@@ -5,14 +5,13 @@ from Cython.Build import cythonize
 import urllib.request
 import zipfile
 import os
-import subprocess  # nosec B404 - a build script must invoke compilers and toolchain probes
+import subprocess 
 import sys
 import shutil
 import re
 import warnings
 import numpy as np
 
-# Global variables for compiler flags
 compile_flags = []
 link_flags = []
 
@@ -102,8 +101,7 @@ def ensure_eigen():
         zip_path = "eigen.zip"
         if not EIGEN_URL.startswith("https://"):
             raise RuntimeError(f"Refusing to fetch Eigen over a non-HTTPS URL: {EIGEN_URL}")
-        # nosec B310 - scheme is pinned to https immediately above
-        urllib.request.urlretrieve(EIGEN_URL, zip_path)  # nosemgrep: dynamic-urllib-use-detected
+        urllib.request.urlretrieve(EIGEN_URL, zip_path)
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(EIGEN_DIR)
         os.remove(zip_path)
@@ -152,7 +150,6 @@ def get_cuda_arch():
     """Automatically detect the local GPU architecture via nvidia-smi."""
     default_arch = "sm_75"
     try:
-        # nosec B603 - fixed argv, absolute path, no shell
         output = subprocess.check_output(
             [resolve_executable("nvidia-smi"),
              "--query-gpu=compute_cap", "--format=csv,noheader"],
@@ -208,9 +205,8 @@ def build_cuda_object(nvcc, src, obj, arch="sm_75", host_compiler=None, include_
     cmd += ["-c", src, "-o", obj]
 
     print("nvcc:", " ".join(cmd))
-    # nosec B603 - argv is a list (no shell); cmd[0] is the absolute nvcc path from
-    # find_cuda(), and every other element is a literal flag or a build-local path.
-    subprocess.check_call(cmd)  # nosemgrep: dangerous-subprocess-use-audit
+
+    subprocess.check_call(cmd)
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
