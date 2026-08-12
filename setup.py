@@ -279,26 +279,6 @@ else:
 # ===============================================================
 # 4. Compiler selection (macOS specific)
 # ===============================================================
-def prompt_install_libomp():
-    """Ask the user before installing libomp via Homebrew; raise if declined or non-interactive."""
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "libomp is required for OpenMP support but was not found.\n"
-            "Install it with: brew install libomp"
-        )
-
-    answer = input(
-        "libomp not found. Install it now via 'brew install libomp'? [y/N] "
-    ).strip().lower()
-    if answer != "y":
-        raise RuntimeError(
-            "libomp is required for OpenMP support.\n"
-            "Install it with: brew install libomp"
-        )
-
-    subprocess.check_call(["brew", "install", "libomp"])
-
-
 def configure_macos_compiler():
     """Pick an OpenMP-capable compiler on macOS and return (compile_flags, link_flags).
 
@@ -335,7 +315,8 @@ def configure_macos_compiler():
 
     if os.path.exists(llvm_clang) and os.path.exists(llvm_clangxx):
         if not os.path.exists(omp_root):
-            prompt_install_libomp()
+            print("libomp not found. Attempting to install via Homebrew...")
+            subprocess.check_call(["brew", "install", "libomp"])
 
         print(f"Using Homebrew LLVM Clang: {llvm_clangxx}")
         os.environ["CC"] = llvm_clang
@@ -398,7 +379,8 @@ def configure_macos_compiler():
         raise RuntimeError("Apple Clang not found. Please install Xcode Command Line Tools.")
 
     if not os.path.exists(omp_root):
-        prompt_install_libomp()
+        print("libomp not found. Attempting to install via Homebrew...")
+        subprocess.check_call(["brew", "install", "libomp"])
 
     os.environ["CC"] = clang_bin
     os.environ["CXX"] = clangpp_bin
