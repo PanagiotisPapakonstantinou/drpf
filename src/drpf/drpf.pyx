@@ -197,8 +197,10 @@ cdef class DRPF:
         if not self._is_indexed:
             raise RuntimeError("Index is empty. Call index() first.")
 
-        cdef Py_ssize_t n = q.shape[0]
-        cdef const float* data_ptr = &q[0]
+        cdef np.ndarray[np.float32_t, ndim=1, mode="c"] q_c = np.ascontiguousarray(q, dtype=np.float32)
+
+        cdef Py_ssize_t n = q_c.shape[0]
+        cdef const float* data_ptr = &q_c[0]
         cdef ANNResult result = self.c_drpf.ann(data_ptr, n, k, votes)
         cdef Py_ssize_t size = result.indices.size()
 
@@ -271,8 +273,8 @@ cdef class DRPF:
         if not self._is_indexed:
             raise RuntimeError("Index is empty. Call index() first.")
 
-        cdef np.ndarray[np.float32_t, ndim=2, mode="c"] queries_c = \
-            np.ascontiguousarray(queries, dtype=np.float32)
+        cdef np.ndarray[np.float32_t, ndim=2, mode="c"] queries_c = np.ascontiguousarray(queries, dtype=np.float32)
+
         cdef const float* q_ptr = <const float*> queries_c.data
         cdef int n_queries = queries_c.shape[0]
         cdef int dim = queries_c.shape[1]
