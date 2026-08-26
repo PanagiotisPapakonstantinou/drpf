@@ -96,7 +96,8 @@ namespace drpf
 
         const float *proj_q = d_proj_query + (size_t)q_idx * proj_cols;
 
-        constexpr int MAX_TREES = 512;
+        constexpr int MAX_TREES = 1024;
+
         __shared__ int s_leaf_start[MAX_TREES];
         __shared__ int s_leaf_size[MAX_TREES];
         __shared__ int s_num_candidates;
@@ -334,7 +335,6 @@ namespace drpf
         int auto_batch = std::min(max_batch, target_inflight * 4);
         auto_batch = std::max(auto_batch, prop.multiProcessorCount);
         h.max_batch = auto_batch;
-        
 
         h.d_full_dataset = allocate_device<float>((size_t)rows * cols);
         CUDA_CHECK(cudaMemcpy(h.d_full_dataset.get(), data,
