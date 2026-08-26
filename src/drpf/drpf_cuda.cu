@@ -325,7 +325,7 @@ namespace drpf
         cudaDeviceProp prop;
         CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
 
-        size_t smem_bytes = ((size_t)cols * sizeof(float)) + ((size_t)proj_cols * sizeof(float));
+        size_t smem_bytes = ((size_t)cols * sizeof(float));
         int blocks_per_sm = 0;
         CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
             &blocks_per_sm, ann_search_kernel, DRPF_BLOCK_SIZE, smem_bytes));
@@ -334,6 +334,7 @@ namespace drpf
         int auto_batch = std::min(max_batch, target_inflight * 4);
         auto_batch = std::max(auto_batch, prop.multiProcessorCount);
         h.max_batch = auto_batch;
+        
 
         h.d_full_dataset = allocate_device<float>((size_t)rows * cols);
         CUDA_CHECK(cudaMemcpy(h.d_full_dataset.get(), data,
