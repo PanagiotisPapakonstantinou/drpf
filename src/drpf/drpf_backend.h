@@ -185,8 +185,7 @@ namespace drpf
                 if (lower_bound > heap_worst)
                     continue;
 
-                float dot = data.row(idx).dot(q);
-                float dist = (*norms)[idx] + q_norm - 2.0f * dot;
+                float dist = (data.row(idx) - q).squaredNorm();
 
                 if (static_cast<int>(ctx.heap.size()) < k)
                 {
