@@ -224,7 +224,7 @@ namespace drpf
         void compact()
         {
             int packed_depth = true_depth;
-            if (packed_depth >= internal_depth)
+            if (packed_depth > internal_depth)
                 return;
 
             Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>
