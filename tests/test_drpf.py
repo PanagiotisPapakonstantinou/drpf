@@ -1,5 +1,5 @@
 """
-Tests for the DRPF (Density-based Random Projection Forest) Cython extension.
+Tests for the DRPF (Dense Random Projection Forest) Cython extension.
 
 Assumes the extension has been compiled and is importable as `drpf`.
 Run with: pytest tests/test_drpf.py -v

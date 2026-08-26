@@ -56,8 +56,7 @@ namespace drpf
 
             projectionValues.resize(size);
 
-            int local_col = node_depth % (this->treeDepth + 1);
-            const int col = this->offset + local_col;
+            const int col = this->offset + node_depth;
             const Scalar *col_ptr = this->rndm_projections.data() + std::size_t(col) * this->rndm_projections.rows();
 
             for (int i = 0; i < size; ++i)
@@ -441,6 +440,10 @@ namespace drpf
         {
             if (votes <= 0)
                 throw std::invalid_argument("votes must be a positive integer (>= 1).");
+
+            if (k <= 0)
+                throw std::invalid_argument("k must be a positive integer (>= 1).");
+
             return backend->ann_batch(queries, n_queries, dim, k, votes);
         }
 
@@ -448,6 +451,10 @@ namespace drpf
         {
             if (votes <= 0)
                 throw std::invalid_argument("votes must be a positive integer (>= 1).");
+
+            if (k <= 0)
+                throw std::invalid_argument("k must be a positive integer (>= 1).");
+
             return backend->ann(query_ptr, static_cast<int>(length), k, votes);
         }
     };

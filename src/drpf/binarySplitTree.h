@@ -310,7 +310,7 @@ namespace drpf
                 int curr_idx = st.back();
                 st.pop_back();
 
-                if (leafDataPool[curr_idx].getSize() <= target_leaf_size)
+                if (leafDataPool[curr_idx].getSize() <= target_leaf_size || leafDataPool[curr_idx].depth >= treeDepth)
                 {
                     true_depth = std::max(true_depth, (int)leafDataPool[curr_idx].depth);
                     max_leaf_size = std::max(max_leaf_size, (int)leafDataPool[curr_idx].getSize());
