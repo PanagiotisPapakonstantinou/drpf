@@ -291,7 +291,6 @@ def configure_macos_compiler():
             [
                 "-std=c++20",
                 "-O3",
-                "-ffast-math",
                 "-funroll-loops",
                 "-fno-strict-aliasing",
                 "-DNDEBUG",
@@ -326,7 +325,6 @@ def configure_macos_compiler():
             [
                 "-std=c++20",
                 "-O3",
-                "-ffast-math",
                 "-funroll-loops",
                 "-fno-strict-aliasing",
                 "-DNDEBUG",
@@ -361,7 +359,6 @@ def configure_macos_compiler():
             [
                 "-std=c++20",
                 "-O3",
-                "-ffast-math",
                 "-funroll-loops",
                 "-fno-strict-aliasing",
                 "-DNDEBUG",
@@ -389,7 +386,6 @@ def configure_macos_compiler():
         [
             "-std=c++20",
             "-O3",
-            "-ffast-math",
             "-funroll-loops",
             "-fno-strict-aliasing",
             "-DNDEBUG",
@@ -410,7 +406,7 @@ if sys.platform == "darwin":
     compile_flags, link_flags = configure_macos_compiler()
 elif sys.platform.startswith("linux"):
     compile_flags = [
-        "-std=c++20", "-O3", "-march=native", "-ffast-math",
+        "-std=c++20", "-O3", "-march=native",
         "-funroll-loops", "-fno-strict-aliasing", "-DNDEBUG", "-fopenmp",
     ]
     link_flags = ["-fopenmp"]
@@ -418,7 +414,6 @@ else:  # Windows
     compile_flags = [
         "/std:c++20",
         "/O2",
-        "/fp:fast",
         "/DNDEBUG",
         "/openmp:experimental",
         "/Zc:cplusplus",

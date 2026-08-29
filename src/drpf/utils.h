@@ -12,8 +12,7 @@
 #include <immintrin.h>
 #endif
 
-#if defined(__SSE2__) && !defined(__AVX__)
-#include <emmintrin.h>
+#if defined(__SSE3__) && !defined(__AVX__)
 #include <pmmintrin.h>
 #endif
 
@@ -216,7 +215,7 @@ namespace drpf
         return sum;
     }
 
-#elif defined(__SSE__)
+#elif defined(__SSE3__)
 
     /**
      * @brief Legacy SSE implementation (128-bit).

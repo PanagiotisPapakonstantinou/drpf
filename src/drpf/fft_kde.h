@@ -15,8 +15,7 @@
 #include <immintrin.h>
 #endif
 
-#if defined(__SSE2__) && !defined(__AVX__)
-#include <emmintrin.h>
+#if defined(__SSE3__) && !defined(__AVX__)
 #include <pmmintrin.h>
 #endif
 
@@ -265,9 +264,9 @@ namespace fftkde
 #endif
 
                     // =========================================================
-                    // SSE2 Optimization (Fallback if AVX not present but SSE is)
+                    // SSE3 Optimization (Fallback if AVX not present but SSE is)
                     // =========================================================
-#if defined(__SSE2__) && !defined(__AVX2__)
+#if defined(__SSE3__) && !defined(__AVX2__)
                     if constexpr (std::is_same<Real, double>::value)
                     {
                         // Processes 1 complex number (2 doubles) per iteration
