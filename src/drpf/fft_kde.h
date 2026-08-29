@@ -605,6 +605,7 @@ namespace fftkde
         // Caching mechanism for Kernel FFT
         std::vector<std::complex<T>> kernel_fft_;
         T last_h_ = T(-1);
+        T last_dx_ = T(-1);
         bool kernel_fft_valid_ = false;
 
         // Buffers padded to 2*N to avoid circular convolution artifacts
@@ -626,6 +627,7 @@ namespace fftkde
 
             kernel_fft_valid_ = false;
             last_h_ = T(-1);
+            last_dx_ = T(-1);
         }
 
         /**
@@ -788,7 +790,10 @@ namespace fftkde
             // ---------------------------------------------------------
             // Recompute the cached kernel only if the bandwidth (smoothing factor)
             // has changed significantly since the last run.
-            if (!kernel_fft_valid_ || std::abs(h_ - last_h_) > static_cast<T>(1e-6))
+            const T tol = static_cast<T>(1e-4);
+            const bool h_changed = !(std::abs(h_ - last_h_) <= tol * std::abs(last_h_));
+            const bool dx_changed = !(std::abs(dx_ - last_dx_) <= tol * std::abs(last_dx_));
+            if (!kernel_fft_valid_ || h_changed || dx_changed)
             {
                 build_kernel_fft();
             }
@@ -860,6 +865,7 @@ namespace fftkde
 
             kernel_fft_valid_ = true;
             last_h_ = h_;
+            last_dx_ = dx_;
         }
 
         static T std_dev(const std::vector<T> &data)
