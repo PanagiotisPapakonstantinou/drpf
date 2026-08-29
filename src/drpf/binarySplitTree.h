@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <limits>
 
 #if defined(_MSC_VER)
 #define FORCE_INLINE __forceinline
@@ -131,9 +132,12 @@ namespace drpf
             : rndm_projections(rndm_ref), root_idx(-1), treeIndex(index), treeDepth(tree_depth),
               splitDepth(split_depth), offset(treeIndex * (treeDepth + 1)), keyCounter(0), search_space(search_space)
         {
-            int max_nodes = (1 << (treeDepth + 1)) - 1;
-            routingPool.reserve(max_nodes);
-            leafDataPool.reserve(max_nodes);
+            const long long n_points = static_cast<long long>(rndm_projections.rows());
+            const long long depth_bound = (treeDepth < 30)
+                                              ? ((1LL << (treeDepth + 1)) - 1)
+                                              : std::numeric_limits<long long>::max();
+            const long long data_bound = 2LL * n_points + 1;
+            const long long max_nodes = std::min(depth_bound, data_bound);
 
             indices.resize(rndm_projections.rows());
             std::iota(indices.begin(), indices.end(), 0);
@@ -171,14 +175,13 @@ namespace drpf
         std::pair<int, int> allocChildren(int parent_idx, int left_key, int left_start, int left_end,
                                           int right_key, int right_start, int right_end)
         {
-            RoutingNode &parentR = routingPool[parent_idx];
 
             int depth = leafDataPool[parent_idx].depth + 1;
 
             int left_idx = allocNode(left_key, left_start, left_end, depth);
             int right_idx = allocNode(right_key, right_start, right_end, depth);
 
-            parentR.left = left_idx;
+            routingPool[parent_idx].left = left_idx;
 
             leafDataPool[left_idx].parent = parent_idx;
             leafDataPool[right_idx].parent = parent_idx;

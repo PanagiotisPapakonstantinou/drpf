@@ -224,7 +224,7 @@ namespace drpf
         void compact()
         {
             int packed_depth = true_depth;
-            if (packed_depth > internal_depth)
+            if (packed_depth >= internal_depth)
                 return;
 
             Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>
@@ -369,7 +369,7 @@ namespace drpf
 
             std::vector<int> sizes;
 
-            if (search_space > 0)
+            if (search_space > 1.0f)
             {
                 int estimated_leaves_per_tree = _rows / static_cast<int>(search_space);
                 int multiplier = (index == -1) ? numTrees : 1;

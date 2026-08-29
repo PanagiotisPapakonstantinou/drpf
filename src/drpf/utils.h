@@ -14,6 +14,7 @@
 
 #if defined(__SSE2__) && !defined(__AVX__)
 #include <emmintrin.h>
+#include <pmmintrin.h>
 #endif
 
 namespace drpf
