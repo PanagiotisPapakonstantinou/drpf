@@ -139,6 +139,9 @@ namespace drpf
             const long long data_bound = 2LL * n_points + 1;
             const long long max_nodes = std::min(depth_bound, data_bound);
 
+            routingPool.reserve(static_cast<size_t>(max_nodes));
+            leafDataPool.reserve(static_cast<size_t>(max_nodes));
+
             indices.resize(rndm_projections.rows());
             std::iota(indices.begin(), indices.end(), 0);
 
