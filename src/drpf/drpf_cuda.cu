@@ -67,7 +67,7 @@ namespace drpf
         while (true)
         {
             uint32_t old_gen = old_val >> 16;
-            +uint32_t old_votes = old_val & 0xFFFFu;
+            uint32_t old_votes = old_val & 0xFFFFu;
             uint32_t votes = (old_gen == generation) ? (old_votes + 1) : 1u;
             uint32_t new_val = (generation << 16) | votes;
 
