@@ -832,3 +832,203 @@ class TestPlotQueryLeaves:
         monkeypatch.setattr(plt, "show", lambda: None)
         with pytest.raises(ValueError, match="Method must be"):
             idx.plot_query_leaves(data[0], method="bogus")
+
+# ---------------------------------------------------------------------------
+# Save / load
+# ---------------------------------------------------------------------------
+class TestSaveLoad:
+    """Persisting an index to disk and restoring it.
+
+    The dataset is deliberately not stored in the index file, so load() takes
+    the original array alongside the path. These tests cover both the happy
+    path and the ways that contract can be violated.
+    """
+
+    def test_round_trip_returns_identical_neighbours(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        rng = np.random.default_rng(7)
+        queries = rng.standard_normal((25, data.shape[1])).astype(np.float32)
+
+        before_idx, before_dist = idx.ann_batch(
+            queries, k=5, votes=1, return_distances=True
+        )
+
+        restored = DRPF()
+        restored.load(path, data)
+        after_idx, after_dist = restored.ann_batch(
+            queries, k=5, votes=1, return_distances=True
+        )
+
+        np.testing.assert_array_equal(before_idx, after_idx)
+        np.testing.assert_array_equal(before_dist, after_dist)
+
+    def test_round_trip_single_query(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        restored = DRPF()
+        restored.load(path, data)
+
+        before = idx.ann(data[3], k=5)
+        after = restored.ann(data[3], k=5)
+        np.testing.assert_array_equal(before, after)
+
+    def test_leaf_sizes_survive_round_trip(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        restored = DRPF()
+        restored.load(path, data)
+
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), restored.get_leaf_sizes())
+
+    def test_constructor_args_are_overwritten_by_file(self, indexed_drpf, tmp_path):
+        """A loaded index uses the saved parameters, not the constructor's."""
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        # Deliberately wrong: the file was written with num_trees=3, depth=3.
+        restored = DRPF(num_trees=1, depth=1)
+        restored.load(path, data)
+
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), restored.get_leaf_sizes())
+
+    def test_loaded_index_keeps_dataset_alive(self, indexed_drpf, tmp_path):
+        """The C++ side borrows the data pointer; the wrapper must hold a ref.
+
+        Without that reference the array would be collected here and every
+        later query would read freed memory.
+        """
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        query = data[0].copy()
+
+        restored = DRPF()
+        restored.load(path, data)
+
+        del data
+        del idx
+        gc.collect()
+
+        result = restored.ann(query, k=5)
+        assert len(result) == 5
+
+    def test_save_before_index_raises(self, tmp_path):
+        idx = DRPF(num_trees=2, depth=2)
+        with pytest.raises(RuntimeError):
+            idx.save(str(tmp_path / "never_written.drpf"))
+
+    def test_load_rejects_wrong_row_count(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        wrong = data[: data.shape[0] // 2].copy()
+        restored = DRPF()
+        with pytest.raises(RuntimeError):
+            restored.load(path, wrong)
+
+    def test_load_rejects_wrong_dimensionality(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        rng = np.random.default_rng(3)
+        wrong = rng.standard_normal((data.shape[0], data.shape[1] + 1)).astype(np.float32)
+
+        restored = DRPF()
+        with pytest.raises(RuntimeError):
+            restored.load(path, wrong)
+
+    def test_load_rejects_missing_file(self, small_data, tmp_path):
+        restored = DRPF()
+        with pytest.raises(RuntimeError):
+            restored.load(str(tmp_path / "does_not_exist.drpf"), small_data)
+
+    def test_load_rejects_foreign_file(self, small_data, tmp_path):
+        """A file that is not a DRPF index must fail on the magic number."""
+        path = tmp_path / "garbage.drpf"
+        path.write_bytes(b"this is not an index" * 8)
+
+        restored = DRPF()
+        with pytest.raises(RuntimeError):
+            restored.load(str(path), small_data)
+
+    def test_load_rejects_truncated_file(self, indexed_drpf, tmp_path):
+        """A valid header followed by a cut-off body must not load silently."""
+        idx, data = indexed_drpf
+        path = tmp_path / "index.drpf"
+        idx.save(str(path))
+
+        blob = path.read_bytes()
+        path.write_bytes(blob[: len(blob) // 2])
+
+        restored = DRPF()
+        with pytest.raises(RuntimeError):
+            restored.load(str(path), data)
+
+    def test_load_accepts_non_contiguous_dataset(self, indexed_drpf, tmp_path):
+        """load() should normalise its input the same way index() does."""
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        # A Fortran-ordered view has the same shape but different memory layout.
+        non_contiguous = np.asfortranarray(data)
+
+        restored = DRPF()
+        restored.load(path, non_contiguous)
+
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), restored.get_leaf_sizes())
+
+    def test_saved_file_is_non_empty(self, indexed_drpf, tmp_path):
+        idx, _ = indexed_drpf
+        path = tmp_path / "index.drpf"
+        idx.save(str(path))
+        assert path.stat().st_size > 0
+
+    def test_save_overwrites_existing_file(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = tmp_path / "index.drpf"
+        path.write_bytes(b"stale contents")
+
+        idx.save(str(path))
+
+        restored = DRPF()
+        restored.load(str(path), data)
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), restored.get_leaf_sizes())
+
+    def test_can_load_twice_into_same_object(self, indexed_drpf, tmp_path):
+        idx, data = indexed_drpf
+        path = str(tmp_path / "index.drpf")
+        idx.save(path)
+
+        restored = DRPF()
+        restored.load(path, data)
+        restored.load(path, data)
+
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), restored.get_leaf_sizes())
+
+    def test_loaded_index_can_be_saved_again(self, indexed_drpf, tmp_path):
+        """A restored index is a first-class index, not a read-only view."""
+        idx, data = indexed_drpf
+        first = str(tmp_path / "first.drpf")
+        second = str(tmp_path / "second.drpf")
+
+        idx.save(first)
+
+        restored = DRPF()
+        restored.load(first, data)
+        restored.save(second)
+
+        again = DRPF()
+        again.load(second, data)
+        np.testing.assert_array_equal(idx.get_leaf_sizes(), again.get_leaf_sizes())
