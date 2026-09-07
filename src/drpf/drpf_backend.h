@@ -107,7 +107,7 @@ namespace drpf
             ctx.resize(rows, max_search_buffer_size, k);
 
             ctx.generation++;
-            if (ctx.generation >= (1 << 24))
+            if (ctx.generation >= (1 << 16))
             {
                 std::fill(ctx.state.begin(), ctx.state.end(), 0);
                 ctx.generation = 1;
@@ -115,7 +115,7 @@ namespace drpf
 
             ctx.candidates.clear();
 
-            uint32_t gen_mask = ctx.generation << 8;
+            uint32_t gen_mask = ctx.generation << 16;
             uint32_t target_votes = static_cast<uint32_t>(std::max(1, votes));
 
             const int prefetch_dist = 32;
@@ -137,9 +137,9 @@ namespace drpf
                     int idx = leaf_ptr[j];
                     uint32_t current_state = ctx.state[idx];
 
-                    uint32_t is_same_gen = ((current_state >> 8) == ctx.generation);
+                    uint32_t is_same_gen = ((current_state >> 16) == ctx.generation);
 
-                    uint32_t new_votes = ((current_state & 0xFF) * is_same_gen) + 1;
+                    uint32_t new_votes = ((current_state & 0xFFFFu) * is_same_gen) + 1;
 
                     ctx.state[idx] = gen_mask | new_votes;
 
