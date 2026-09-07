@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <ostream>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -13,6 +14,8 @@
 #include <string>
 #include <vector>
 #include <limits>
+
+#include "utils.h"
 
 #if defined(_MSC_VER)
 #define FORCE_INLINE __forceinline
@@ -44,6 +47,8 @@ namespace drpf
         int32_t left;
     };
 
+    static_assert(sizeof(RoutingNode) == 8, "serialization format assumes 8-byte RoutingNode");
+
     /**
      * @brief Cold data used only during construction and at the final leaf.
      */
@@ -58,6 +63,8 @@ namespace drpf
         uint32_t getSize() const { return end - start; }
     };
 
+    static_assert(sizeof(LeafData) == 20, "serialization format assumes 20-byte LeafData");
+
     /**
      * @brief Abstract Base Class for a Random Projection Tree.
      * Handles tree construction, indexing, and memory pooling.
@@ -66,7 +73,7 @@ namespace drpf
     class BinarySplitTreeBase
     {
     protected:
-        const Eigen::Ref<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> rndm_projections;
+        const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> *rndm_projections;
         std::vector<uint32_t> indices;
 
         std::vector<RoutingNode> routingPool;
@@ -124,15 +131,89 @@ namespace drpf
             lData.parent = -1;
         }
 
+        void validate(int n_points) const
+        {
+            const int64_t n = static_cast<int64_t>(routingPool.size());
+
+            if (routingPool.size() != leafDataPool.size())
+                throw std::runtime_error("tree: routing/leaf pool size mismatch");
+
+            if (n == 0)
+                throw std::runtime_error("tree: empty node pool");
+
+            if (root_idx < 0 || root_idx >= n)
+                throw std::runtime_error("tree: root index out of range");
+
+            if (treeDepth < 0 || treeIndex < 0 || offset < 0)
+                throw std::runtime_error("tree: negative depth, index or offset");
+
+            if (offset != treeIndex * (treeDepth + 1))
+                throw std::runtime_error("tree: offset inconsistent with treeIndex/treeDepth");
+
+            for (int64_t i = 0; i < n; ++i)
+            {
+                const int32_t left = routingPool[i].left;
+
+                if (left == -1)
+                    continue;
+
+                if (left <= i || left < 0 || left + 1 >= n)
+                    throw std::runtime_error("tree: invalid child index at node " +
+                                             std::to_string(i));
+            }
+
+            for (int64_t i = 0; i < n; ++i)
+            {
+                const LeafData &ld = leafDataPool[i];
+
+                if (ld.start > ld.end || ld.end > static_cast<uint32_t>(indices.size()))
+                    throw std::runtime_error("tree: leaf range out of bounds at node " +
+                                             std::to_string(i));
+            }
+
+            std::vector<int> stack;
+            stack.reserve(64);
+            stack.push_back(root_idx);
+
+            std::vector<int> depth_of(static_cast<size_t>(n), 0);
+            int max_depth = 0;
+
+            while (!stack.empty())
+            {
+                const int curr = stack.back();
+                stack.pop_back();
+
+                const int d = depth_of[static_cast<size_t>(curr)];
+                max_depth = std::max(max_depth, d);
+
+                const int32_t left = routingPool[curr].left;
+                if (left == -1)
+                    continue;
+
+                depth_of[static_cast<size_t>(left)] = d + 1;
+                depth_of[static_cast<size_t>(left) + 1] = d + 1;
+                stack.push_back(left);
+                stack.push_back(left + 1);
+            }
+
+            if (max_depth > treeDepth)
+                throw std::runtime_error("tree: reachable depth " + std::to_string(max_depth) +
+                                         " exceeds declared treeDepth " + std::to_string(treeDepth));
+
+            for (uint32_t idx : indices)
+                if (idx >= static_cast<uint32_t>(n_points))
+                    throw std::runtime_error("tree: point id out of bounds");
+        }
+
         virtual void splitNode(int node_idx) = 0;
 
     public:
-        BinarySplitTreeBase(const Eigen::Ref<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> &rndm_ref,
+        BinarySplitTreeBase(const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> &rndm_ref,
                             int index, int tree_depth, int split_depth, float search_space)
-            : rndm_projections(rndm_ref), root_idx(-1), treeIndex(index), treeDepth(tree_depth),
+            : rndm_projections(&rndm_ref), root_idx(-1), treeIndex(index), treeDepth(tree_depth),
               splitDepth(split_depth), offset(treeIndex * (treeDepth + 1)), keyCounter(0), search_space(search_space)
         {
-            const long long n_points = static_cast<long long>(rndm_projections.rows());
+            const long long n_points = static_cast<long long>(rndm_projections->rows());
             const long long depth_bound = (treeDepth < 30)
                                               ? ((1LL << (treeDepth + 1)) - 1)
                                               : std::numeric_limits<long long>::max();
@@ -142,11 +223,36 @@ namespace drpf
             routingPool.reserve(static_cast<size_t>(max_nodes));
             leafDataPool.reserve(static_cast<size_t>(max_nodes));
 
-            indices.resize(rndm_projections.rows());
+            indices.resize(rndm_projections->rows());
             std::iota(indices.begin(), indices.end(), 0);
 
             true_depth = 0;
             initialiseRoot(keyCounter, 0, static_cast<int>(indices.size()));
+        }
+
+        BinarySplitTreeBase(std::istream &is, int n_points)
+            : rndm_projections(nullptr), root_idx(-1), treeIndex(0), treeDepth(0),
+              splitDepth(0), true_depth(0), max_leaf_size(0), offset(0),
+              keyCounter(0), search_space(0.0f)
+        {
+            readPod(is, root_idx);
+            readPod(is, treeIndex);
+            readPod(is, treeDepth);
+            readPod(is, splitDepth);
+            readPod(is, true_depth);
+            readPod(is, max_leaf_size);
+            readPod(is, offset);
+            readPod(is, search_space);
+
+            const long long depth_bound = (treeDepth >= 0 && treeDepth < 30) ? ((1LL << (treeDepth + 1)) - 1) : std::numeric_limits<long long>::max();
+            const long long data_bound = 2LL * n_points + 1;
+            const uint64_t max_nodes = static_cast<uint64_t>(std::min(depth_bound, data_bound));
+
+            readPodArray(is, indices, static_cast<uint64_t>(n_points));
+            readPodArray(is, routingPool, max_nodes);
+            readPodArray(is, leafDataPool, max_nodes);
+
+            validate(n_points);
         }
 
         virtual ~BinarySplitTreeBase()
@@ -307,7 +413,7 @@ namespace drpf
             st.reserve(treeDepth + 1);
             st.push_back(root_idx);
 
-            int rows = rndm_projections.rows();
+            int rows = rndm_projections->rows();
             float max_threshold = 1.47f;
             float target_leaf_size = max_threshold * (rows / std::pow(2.0f, splitDepth));
 
@@ -367,6 +473,22 @@ namespace drpf
             int leaf_idx = findLeafIdxForQuery(projectedQuery);
             const LeafData &leaf = leafDataPool[leaf_idx];
             return {indices.data() + leaf.start, leaf.getSize()};
+        }
+
+        void serialise(std::ostream &os) const
+        {
+            writePod(os, root_idx);
+            writePod(os, treeIndex);
+            writePod(os, treeDepth);
+            writePod(os, splitDepth);
+            writePod(os, true_depth);
+            writePod(os, max_leaf_size);
+            writePod(os, offset);
+            writePod(os, search_space);
+
+            writePodArray(os, indices.data(), indices.size());
+            writePodArray(os, routingPool.data(), routingPool.size());
+            writePodArray(os, leafDataPool.data(), leafDataPool.size());
         }
     };
 

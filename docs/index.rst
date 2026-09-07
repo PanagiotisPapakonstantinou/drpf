@@ -86,6 +86,41 @@ The most efficient way to use ``drpf`` is by processing queries in batches. Belo
    print(f"Nearest neighbors for first query: {indices[0]}")
 
 
+Saving and Loading an Index
+---------------------------
+A built index can be written to disk and restored later, avoiding the cost of
+rebuilding the forest.
+
+.. code-block:: python
+
+   # Build once, save
+   index = drpf.DRPF(num_trees=50, depth=8, seed=42)
+   index.index(data)
+   index.save("my_index.drpf")
+
+   # Restore later, in a new process
+   restored = drpf.DRPF()
+   restored.load("my_index.drpf", data)
+
+   results = restored.ann_batch(queries, k=10, votes=2)
+
+.. important::
+
+   **The dataset is not stored in the index file.** A DRPF index holds only
+   permutations of point ids, so ``load()`` requires the same array the index
+   was built on to be passed alongside the path.
+
+   The dataset's shape is validated against the file, and a mismatch raises an
+   error.
+
+Any constructor arguments are overwritten by the values stored in the file, so
+``drpf.DRPF()`` with defaults is sufficient when loading.
+
+Files are written in a versioned binary format and are not portable between
+platforms of differing endianness. Size is dominated by the per-tree point
+index, roughly ``4 x n_samples x num_trees`` bytes.
+
+
 Contents
 --------
 

@@ -34,6 +34,8 @@ cdef extern from "drpf.h" namespace "drpf":
         void index(const float* data_ptr, size_t length, int dimensions) except + nogil
         ANNResult ann(const float* data, size_t length, int k, int votes) except + nogil
         ANNResult ann_batch(const float* queries, int n_queries, int dim, int k, int votes) except + nogil
+        void save(const string &path) except +
+        void load(const string &path, const float *data_ptr, size_t length, int dimensions) except +
         vector[int] getLeafNodeSizes(int index) except +
         vector[pair[int, int]] getForestIndices(const float* query_ptr, size_t length, int index) except +
 
@@ -298,6 +300,63 @@ cdef class DRPF:
             return np_indices, np_distances
 
         return np_indices
+
+    def save(self, str path):
+        """
+        Writes the index to a file.
+
+        Only the forest and its projection matrix are stored — not the dataset.
+        Loading requires the same array the index was built on to be supplied to
+        load().
+
+        Parameters
+        ----------
+        path : str
+            Destination path. Any existing file is overwritten.
+
+        Raises
+        ------
+        RuntimeError
+            If the index has not been built, or the file cannot be written.
+        """
+        if(not self._is_indexed):
+            raise RuntimeError("Index is empty. Call index() first.")
+
+        cdef string cpp_path = path.encode('utf-8')
+        self.c_drpf.save(cpp_path)
+
+
+    def load(self, str path, np.ndarray[np.float32_t, ndim=2] data):
+        """
+        Restores an index previously written by save().
+
+        The dataset is not stored in the index file, so the same array the index
+        was built on must be supplied here. Its shape is validated against the
+        file; identical shape with different contents cannot be detected.
+
+        Parameters
+        ----------
+        path : str
+            Path to a .drpf index file.
+        data : np.ndarray, shape (n_samples, n_features), dtype float32
+            The dataset the index was built on. A reference is retained for the
+            lifetime of this object.
+        """
+        cdef string cpp_path = path.encode('utf-8')
+
+        cdef np.ndarray[np.float32_t, ndim=2, mode="c"] data_c = \
+            np.ascontiguousarray(data, dtype=np.float32)
+
+        self.data_pointer = data_c
+
+        cdef const float* data_ptr = <const float*> data_c.data
+        cdef size_t rows = data_c.shape[0]
+        cdef int cols = data_c.shape[1]
+
+        self.c_drpf.load(cpp_path, data_ptr, rows * cols, cols)
+        self._is_indexed = True
+
+        
 
     def get_leaf_sizes(self, int index=-1):
         """
