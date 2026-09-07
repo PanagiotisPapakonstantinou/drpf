@@ -66,10 +66,10 @@ namespace drpf
         uint32_t old_val = *state_ptr;
         while (true)
         {
-            uint32_t old_gen = old_val >> 8;
-            uint32_t old_votes = old_val & 0xFFu;
+            uint32_t old_gen = old_val >> 16;
+            +uint32_t old_votes = old_val & 0xFFFFu;
             uint32_t votes = (old_gen == generation) ? (old_votes + 1) : 1u;
-            uint32_t new_val = (generation << 8) | votes;
+            uint32_t new_val = (generation << 16) | votes;
 
             uint32_t prev = atomicCAS(state_ptr, old_val, new_val);
             if (prev == old_val)
@@ -418,7 +418,7 @@ namespace drpf
             throw std::runtime_error("k exceeds GPU handle max_k");
 
         h.generation++;
-        if (h.generation >= (1u << 24))
+        if (h.generation >= (1u << 16))
         {
             CUDA_CHECK(cudaMemset(h.d_seen.get(), 0,
                                   (size_t)h.max_batch * h.rows * sizeof(uint32_t)));
