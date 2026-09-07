@@ -13,8 +13,10 @@
 #include <span>
 #include <omp.h>
 #include <cstring>
+#include <cstdint>
 #include <string>
 #include <fstream>
+#include <exception>
 
 #ifndef PREFETCH
 #if defined(__GNUC__) || defined(__clang__)
@@ -218,15 +220,33 @@ namespace drpf
             std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> forest(numTrees);
             std::vector<int> depths(numTrees, 0);
 
+            std::exception_ptr first_error;
+
 #pragma omp parallel for schedule(dynamic)
             for (int idx = 0; idx < numTrees; ++idx)
             {
-                auto tree = std::make_unique<KdeBinarySplitTree<Eigen::half>>(
-                    projections, idx, internalDepth, splitDepth, search_space, split_data_bandwidth, min_ratio);
+                if (first_error)
+                    continue;
 
-                depths[idx] = tree->splitTree(greedy);
-                forest[idx] = std::move(tree);
+                try
+                {
+                    auto tree = std::make_unique<KdeBinarySplitTree<Eigen::half>>(
+                        projections, idx, internalDepth, splitDepth, search_space,
+                        split_data_bandwidth, min_ratio);
+
+                    depths[idx] = tree->splitTree(greedy);
+                    forest[idx] = std::move(tree);
+                }
+                catch (...)
+                {
+#pragma omp critical(drpf_build_error)
+                    if (!first_error)
+                        first_error = std::current_exception();
+                }
             }
+
+            if (first_error)
+                std::rethrow_exception(first_error);
 
             for (auto d : depths)
                 true_depth = d > true_depth ? d : true_depth;
@@ -305,6 +325,13 @@ namespace drpf
 
         void index(const float *data_ptr, size_t length, int dimensions)
         {
+            if (dimensions <= 0)
+                throw std::invalid_argument("dimensions must be greater than 0.");
+            if (length == 0)
+                throw std::invalid_argument("data cannot be empty.");
+            if (length % static_cast<size_t>(dimensions) != 0)
+                throw std::invalid_argument("length is not a multiple of dimensions.");
+
             this->_data_ptr = data_ptr;
             this->_rows = static_cast<long>(length) / dimensions;
             this->_cols = dimensions;
@@ -520,6 +547,13 @@ namespace drpf
 
         void load(std::istream &is, const float *data_ptr, size_t length, int dimensions)
         {
+
+            if (dimensions <= 0)
+                throw std::invalid_argument("dimensions must be greater than 0.");
+            if (length == 0)
+                throw std::invalid_argument("data cannot be empty.");
+            if (length % static_cast<size_t>(dimensions) != 0)
+                throw std::invalid_argument("length is not a multiple of dimensions.");
 
             backend.reset();
 
