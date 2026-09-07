@@ -523,8 +523,6 @@ namespace drpf
 
             backend.reset();
 
-            is.exceptions(std::ios::failbit | std::ios::badbit);
-
             DrpfHeader header{};
             readPod(is, header);
 
