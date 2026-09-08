@@ -30,6 +30,7 @@
 #include <span>
 #include <queue>
 #include <omp.h>
+#include <atomic>
 
 #ifdef USE_CUDA
 #include "drpf_cuda.cuh"
@@ -70,8 +71,10 @@ namespace drpf
         int numTrees;
         int max_search_buffer_size;
 
-        struct SearchContext
+        struct alignas(64) SearchContext
         {
+            std::atomic<bool> in_use{false};
+
             std::vector<uint32_t> state;
             std::vector<int> candidates;
             uint32_t generation = 0;
@@ -92,6 +95,21 @@ namespace drpf
                     heap.reserve(k + 1);
             }
         };
+
+        std::vector<SearchContext> _ctx_pool;
+
+        SearchContext *try_acquire_ctx()
+        {
+            const int n = static_cast<int>(_ctx_pool.size());
+            const int hint = omp_get_thread_num() % n;
+            for (int i = 0; i < n; ++i)
+            {
+                SearchContext &c = _ctx_pool[(hint + i) % n];
+                if (!c.in_use.exchange(true, std::memory_order_acquire))
+                    return &c;
+            }
+            return nullptr;
+        }
 
         FORCE_INLINE void exact_ann(
             const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
@@ -150,7 +168,7 @@ namespace drpf
                 }
             }
 
-            int num_cands = static_cast<int>(ctx.candidates.size());
+            size_t num_cands = ctx.candidates.size();
 
             if (num_cands == 0)
             {
@@ -228,7 +246,10 @@ namespace drpf
             int trees, int max_buffer)
             : _data_ptr(data_ptr), _rows(rows), _cols(cols),
               projectionMatrix(projMatrix), norms(nrms), forest(f),
-              numTrees(trees), max_search_buffer_size(max_buffer) {}
+              numTrees(trees), max_search_buffer_size(max_buffer)
+        {
+            _ctx_pool = std::vector<SearchContext>(std::max(8, omp_get_max_threads() * 2));
+        }
 
         ANNResult ann(const float *query, int dim, int k, int votes) override
         {
@@ -244,11 +265,17 @@ namespace drpf
             out.indices.resize(k);
             out.distances_sq.resize(k);
 
-            SearchContext ctx;
+            SearchContext *pooled = try_acquire_ctx();
+            SearchContext local;
+            SearchContext &ctx = pooled ? *pooled : local;
+
             this->exact_ann(data, q, projectedQuery.data(), k, votes,
                             out.indices.data(),
                             out.distances_sq.data(),
                             ctx);
+
+            if (pooled)
+                pooled->in_use.store(false, std::memory_order_release);
 
             return out;
         }
@@ -271,7 +298,9 @@ namespace drpf
 
 #pragma omp parallel
             {
-                SearchContext ctx;
+                SearchContext *pooled = try_acquire_ctx();
+                SearchContext local;
+                SearchContext &ctx = pooled ? *pooled : local;
 
 #pragma omp for schedule(dynamic)
                 for (int i = 0; i < n_queries; ++i)
@@ -283,6 +312,9 @@ namespace drpf
                                     &out.distances_sq[i * k],
                                     ctx);
                 }
+
+                if (pooled)
+                    pooled->in_use.store(false, std::memory_order_release);
             }
 
             return out;
