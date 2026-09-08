@@ -334,7 +334,6 @@ namespace drpf
         int target_inflight = prop.multiProcessorCount * std::max(1, blocks_per_sm);
         int auto_batch = std::min(max_batch, target_inflight * 4);
         auto_batch = std::max(auto_batch, prop.multiProcessorCount);
-        h.max_batch = auto_batch;
 
         h.d_full_dataset = allocate_device<float>((size_t)rows * cols);
         CUDA_CHECK(cudaMemcpy(h.d_full_dataset.get(), data,
@@ -351,6 +350,7 @@ namespace drpf
             CUDA_CHECK(cudaGetLastError());
         }
 
+        CUDA_CHECK(cudaDeviceSynchronize());
         h.d_full_dataset.reset();
 
         h.d_norms = allocate_device<float>((size_t)rows);
@@ -394,6 +394,30 @@ namespace drpf
         cublasHandle_t raw_cublas = nullptr;
         CUBLAS_CHECK(cublasCreate(&raw_cublas));
         h.cublas.reset(raw_cublas);
+
+
+        const size_t per_query_bytes =
+              (size_t)cols * sizeof(float)                    // d_queries
+            + (size_t)proj_cols * sizeof(float)               // d_projected_queries
+            + (size_t)max_k * sizeof(int)                     // d_out_idx
+            + (size_t)max_k * sizeof(float)                   // d_out_dist
+            + (size_t)max_search_buffer_size * sizeof(int)    // d_cand_buf
+            + (size_t)rows * sizeof(uint32_t)                 // d_seen
+            + sizeof(int);                                    // d_num_candidates
+
+        size_t free_bytes = 0, total_bytes = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+
+        const size_t fits = (size_t)(free_bytes * 0.8) / per_query_bytes;
+
+        if (fits < 1)
+            throw std::runtime_error(
+                "DRPF GPU: not enough free VRAM for a single in-flight query "
+                "(need ~" + std::to_string(per_query_bytes >> 20) + " MiB, have ~" +
+                std::to_string(free_bytes >> 20) + " MiB free). "
+                "Use device=\"cpu\", or reduce num_trees / dataset size.");
+
+        h.max_batch = std::max<int>(1, (int)std::min<size_t>((size_t)auto_batch, fits));
 
         h.d_queries = allocate_device<float>((size_t)h.max_batch * cols);
         h.d_projected_queries = allocate_device<float>((size_t)h.max_batch * proj_cols);
@@ -538,7 +562,23 @@ namespace drpf
 
         CUDA_CHECK(cudaMemcpy(h_norms, d_norms.get(), (size_t)rows * sizeof(float), cudaMemcpyDeviceToHost));
 
-        const int MAX_CHUNK_COLS = 512;
+
+        size_t free_bytes = 0, total_bytes = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+
+        const size_t bytes_per_col =
+            (size_t)rows * (sizeof(float) + sizeof(__half))
+            + (size_t)cols * sizeof(float);
+
+        size_t affordable = (size_t)(free_bytes * 0.7) / bytes_per_col;
+        if (affordable < 1)
+            throw std::runtime_error(
+                "DRPF GPU: not enough free VRAM to project even one column "
+                "(need ~" + std::to_string(bytes_per_col >> 20) + " MiB/col, have ~" +
+                std::to_string(free_bytes >> 20) + " MiB free)");
+
+        const int MAX_CHUNK_COLS =
+            (int)std::min<size_t>(std::min<size_t>(affordable, 512), (size_t)proj_cols);
 
         auto d_proj_chunk = allocate_device<float>((size_t)cols * MAX_CHUNK_COLS);
         auto d_out_f32_chunk = allocate_device<float>((size_t)rows * MAX_CHUNK_COLS);
