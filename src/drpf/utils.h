@@ -6,6 +6,7 @@
 #include <cmath>
 #include <random>
 #include <iostream>
+#include <fstream>
 #include <cstdint>
 #include <type_traits>
 #include <stdexcept>
