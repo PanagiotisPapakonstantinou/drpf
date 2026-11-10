@@ -65,7 +65,7 @@ namespace drpf
         const float *_data_ptr;
         long _rows;
         long _cols;
-        const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> *projectionMatrix;
+        const SrhtProjection *srht;
         const Eigen::VectorXf *norms;
         const std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> *forest;
         int numTrees;
@@ -73,19 +73,44 @@ namespace drpf
 
         struct alignas(64) SearchContext
         {
+
             std::atomic<bool> in_use{false};
 
-            std::vector<uint32_t> state;
-            std::vector<int> candidates;
+            std::vector<uint8_t> counts; // rows, all zero between queries
+            std::vector<uint32_t> touched;
+            std::vector<uint64_t> seen_words;
             uint32_t generation = 0;
             std::vector<std::pair<float, int>> heap;
+            std::vector<int> candidates;
 
-            void resize(int rows, int max_candidates, int k)
+            void resize(int rows, int max_candidates, int k, bool use_seen_words = false)
             {
-                if (state.size() != static_cast<size_t>(rows))
+                if (use_seen_words)
                 {
-                    state.assign(rows, 0);
-                    generation = 0;
+                    const size_t word_count =
+                        (static_cast<size_t>(rows) + 31u) / 32u;
+
+                    if (seen_words.size() != word_count)
+                    {
+                        seen_words.assign(word_count, 0);
+                        generation = 0;
+                    }
+
+                    if (!counts.empty())
+                    {
+                        std::vector<uint8_t>().swap(counts);
+                        std::vector<uint32_t>().swap(touched);
+                    }
+                }
+                else
+                {
+                    if (counts.size() != static_cast<size_t>(rows))
+                        counts.assign(rows, 0);
+
+                    touched.clear();
+
+                    if (!seen_words.empty())
+                        std::vector<uint64_t>().swap(seen_words);
                 }
 
                 if (candidates.capacity() < static_cast<size_t>(max_candidates))
@@ -93,6 +118,27 @@ namespace drpf
 
                 if (heap.capacity() < static_cast<size_t>(k + 1))
                     heap.reserve(k + 1);
+            }
+
+            FORCE_INLINE bool mark_seen_once(uint32_t idx) noexcept
+            {
+                const size_t word_idx = idx >> 5;
+                const uint32_t bit = 1u << (idx & 31u);
+
+                uint64_t word = seen_words[word_idx];
+                uint32_t word_generation = static_cast<uint32_t>(word >> 32);
+                uint32_t bits = static_cast<uint32_t>(word);
+
+                if (word_generation != generation)
+                    bits = 0;
+
+                if (bits & bit)
+                    return false;
+
+                seen_words[word_idx] =
+                    (static_cast<uint64_t>(generation) << 32) | (bits | bit);
+
+                return true;
             }
         };
 
@@ -111,71 +157,136 @@ namespace drpf
             return nullptr;
         }
 
-        FORCE_INLINE void exact_ann(
-            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
-            const Eigen::Ref<const Eigen::RowVectorXf> q,
+        FORCE_INLINE void gather_candidates(
             const float *__restrict proj_q,
-            int k,
-            int votes,
-            int *results,
-            float *distances_sq,
-            SearchContext &ctx)
+            SearchContext &ctx,
+            int votes)
         {
-            int rows = static_cast<int>(data.rows());
-            ctx.resize(rows, max_search_buffer_size, k);
+            const uint32_t target_votes = static_cast<uint32_t>(std::max(1, votes));
+            ctx.candidates.clear();
+            constexpr int prefetch_dist = 16;
+            constexpr int B = 8;
 
-            ctx.generation++;
-            if (ctx.generation >= (1 << 16))
+            using Tree = KdeBinarySplitTree<Eigen::half>;
+
+            const auto find_leaves = [&](int t0, int nb, std::span<const uint32_t> *leaves)
             {
-                std::fill(ctx.state.begin(), ctx.state.end(), 0);
-                ctx.generation = 1;
+                const Tree *tr[B];
+                int idx[B];
+                for (int b = 0; b < nb; ++b)
+                {
+                    tr[b] = (*forest)[t0 + b].get();
+                    idx[b] = tr[b]->getRootIndex();
+                }
+
+                for (int depth = 0, any = 1; any; ++depth)
+                {
+                    any = 0;
+                    for (int b = 0; b < nb; ++b)
+                        any |= tr[b]->stepDown(idx[b], depth, proj_q);
+                }
+
+                for (int b = 0; b < nb; ++b)
+                    tr[b]->prefetchLeafData(idx[b]);
+
+                for (int b = 0; b < nb; ++b)
+                {
+                    leaves[b] = tr[b]->leafSpan(idx[b]);
+                    PREFETCH(leaves[b].data());
+                }
+            };
+
+            if (target_votes == 1)
+            {
+                ctx.generation++;
+                if (ctx.generation >= (1u << 16))
+                {
+                    std::fill(ctx.seen_words.begin(), ctx.seen_words.end(), 0);
+                    ctx.generation = 1;
+                }
+
+                for (int t0 = 0; t0 < numTrees; t0 += B)
+                {
+                    const int nb = std::min(B, numTrees - t0);
+                    std::span<const uint32_t> leaves[B];
+                    find_leaves(t0, nb, leaves);
+
+                    for (int b = 0; b < nb; ++b)
+                    {
+                        const uint32_t *ids = leaves[b].data();
+                        const size_t count = leaves[b].size();
+
+                        for (size_t j = 0; j < count; ++j)
+                        {
+                            if (j + prefetch_dist < count)
+                                PREFETCH(&ctx.seen_words[ids[j + prefetch_dist] >> 5]);
+
+                            const uint32_t id = ids[j];
+                            if (ctx.mark_seen_once(id))
+                                ctx.candidates.push_back(static_cast<int>(id));
+                        }
+                    }
+                }
+                return;
             }
 
-            ctx.candidates.clear();
+            if (static_cast<int>(target_votes) > numTrees)
+                return;
 
-            uint32_t gen_mask = ctx.generation << 16;
-            uint32_t target_votes = static_cast<uint32_t>(std::max(1, votes));
+            ctx.touched.clear();
+            uint8_t *cnt = ctx.counts.data();
+            const uint8_t tv = static_cast<uint8_t>(std::min<uint32_t>(target_votes, 255));
+            const int last_new = numTrees - static_cast<int>(target_votes);
 
-            const int prefetch_dist = 32;
-
-            for (int i = 0; i < numTrees; i++)
+            for (int t0 = 0; t0 < numTrees; t0 += B)
             {
-                auto leafSpan = (*forest)[i]->getLeafIndices(proj_q);
-                const unsigned int *leaf_ptr = leafSpan.data();
-                size_t leaf_size = leafSpan.size();
+                const int nb = std::min(B, numTrees - t0);
+                std::span<const uint32_t> leaves[B];
+                find_leaves(t0, nb, leaves);
 
-                for (size_t j = 0; j < leaf_size; ++j)
+                for (int b = 0; b < nb; ++b)
                 {
+                    const bool can_add = (t0 + b) <= last_new;
+                    const uint32_t *ids = leaves[b].data();
+                    const size_t count = leaves[b].size();
 
-                    if (j + prefetch_dist < leaf_size)
+                    for (size_t j = 0; j < count; ++j)
                     {
-                        PREFETCH(&ctx.state[leaf_ptr[j + prefetch_dist]]);
-                    }
+                        if (j + prefetch_dist < count)
+                            PREFETCH(&cnt[ids[j + prefetch_dist]]);
 
-                    int idx = leaf_ptr[j];
-                    uint32_t current_state = ctx.state[idx];
+                        const uint32_t id = ids[j];
+                        uint8_t c = cnt[id];
 
-                    uint32_t is_same_gen = ((current_state >> 16) == ctx.generation);
+                        if (c == 0)
+                        {
+                            if (!can_add)
+                                continue;
+                            ctx.touched.push_back(id);
+                        }
+                        else if (c >= tv)
+                            continue;
 
-                    uint32_t new_votes = ((current_state & 0xFFFFu) * is_same_gen) + 1;
-
-                    ctx.state[idx] = gen_mask | new_votes;
-
-                    if (new_votes == target_votes)
-                    {
-                        ctx.candidates.push_back(idx);
+                        cnt[id] = ++c;
+                        if (c == tv)
+                            ctx.candidates.push_back(static_cast<int>(id));
                     }
                 }
             }
 
-            size_t num_cands = ctx.candidates.size();
+            for (uint32_t id : ctx.touched)
+                cnt[id] = 0;
+        }
 
-            if (num_cands == 0)
-            {
-                std::fill(results, results + k, -1);
-                std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
-                return;
-            }
+        FORCE_INLINE void compute_distances(
+            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
+            const Eigen::Ref<const Eigen::RowVectorXf> q,
+            int k,
+            int num_cands,
+            int *results,
+            float *distances_sq,
+            SearchContext &ctx)
+        {
 
             float q_norm = q.squaredNorm();
             float q_norm_sqrt = std::sqrt(q_norm);
@@ -184,6 +295,8 @@ namespace drpf
 
             ctx.heap.clear();
             float heap_worst = std::numeric_limits<float>::max();
+
+            constexpr int prefetch_dist = 16;
 
             for (size_t i = 0; i < num_cands; ++i)
             {
@@ -237,16 +350,44 @@ namespace drpf
             }
         }
 
+        FORCE_INLINE void exact_ann(
+            const Eigen::Ref<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &data,
+            const Eigen::Ref<const Eigen::RowVectorXf> q,
+            const float *__restrict proj_q,
+            int k,
+            int votes,
+            int *results,
+            float *distances_sq,
+            SearchContext &ctx)
+        {
+            int rows = static_cast<int>(data.rows());
+            ctx.resize(rows, max_search_buffer_size, k, votes <= 1);
+
+            gather_candidates(proj_q, ctx, votes);
+
+            size_t num_cands = ctx.candidates.size();
+
+            if (num_cands == 0)
+            {
+                std::fill(results, results + k, -1);
+                std::fill(distances_sq, distances_sq + k, std::numeric_limits<float>::max());
+                return;
+            }
+
+            compute_distances(data, q, k, static_cast<int>(num_cands), results, distances_sq, ctx);
+        }
+
     public:
         DRPFBackendCPU(
-            const float *data_ptr, long rows, long cols,
-            const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> *projMatrix,
+            const float *data_ptr,
+            long rows,
+            long cols,
+            const SrhtProjection *srht_,
             const Eigen::VectorXf *nrms,
             const std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> *f,
-            int trees, int max_buffer)
-            : _data_ptr(data_ptr), _rows(rows), _cols(cols),
-              projectionMatrix(projMatrix), norms(nrms), forest(f),
-              numTrees(trees), max_search_buffer_size(max_buffer)
+            int trees,
+            int max_buffer)
+            : _data_ptr(data_ptr), _rows(rows), _cols(cols), srht(srht_), norms(nrms), forest(f), numTrees(trees), max_search_buffer_size(max_buffer)
         {
             _ctx_pool = std::vector<SearchContext>(std::max(8, omp_get_max_threads() * 2));
         }
@@ -259,7 +400,11 @@ namespace drpf
 
             const Eigen::Map<const Eigen::RowVectorXf> q(query, dim);
 
-            Eigen::RowVectorXf projectedQuery = q * (*projectionMatrix);
+            const int projDim = static_cast<int>(srht->col_sel.size());
+            Eigen::RowVectorXf projectedQuery(projDim);
+
+            std::vector<float> work(srht->P);
+            srhtProject(*srht, query, work.data(), projectedQuery.data());
 
             ANNResult out;
             out.indices.resize(k);
@@ -270,9 +415,7 @@ namespace drpf
             SearchContext &ctx = pooled ? *pooled : local;
 
             this->exact_ann(data, q, projectedQuery.data(), k, votes,
-                            out.indices.data(),
-                            out.distances_sq.data(),
-                            ctx);
+                            out.indices.data(), out.distances_sq.data(), ctx);
 
             if (pooled)
                 pooled->in_use.store(false, std::memory_order_release);
@@ -286,15 +429,17 @@ namespace drpf
             if (dim != data.cols())
                 throw std::invalid_argument("Query dimensionality mismatch");
 
-            Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> Q(queries, n_queries, dim);
-            Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> projected = Q * (*projectionMatrix);
+            const int projDim = static_cast<int>(srht->col_sel.size());
 
-            const int projDim = projected.cols();
+            Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> projected(n_queries, projDim);
+
+            projectDataSrht(*srht, queries, n_queries, dim, projected);
+
             const float *proj_data = projected.data();
 
             ANNResult out;
-            out.indices.resize(n_queries * k);
-            out.distances_sq.resize(n_queries * k);
+            out.indices.resize(static_cast<size_t>(n_queries) * k);
+            out.distances_sq.resize(static_cast<size_t>(n_queries) * k);
 
 #pragma omp parallel
             {
@@ -305,11 +450,14 @@ namespace drpf
 #pragma omp for schedule(dynamic)
                 for (int i = 0; i < n_queries; ++i)
                 {
-                    const Eigen::Map<const Eigen::RowVectorXf> q(queries + i * dim, dim);
+                    const float *qp = queries + static_cast<size_t>(i) * dim;
+                    const Eigen::Map<const Eigen::RowVectorXf> q(qp, dim);
+
                     const float *proj_q = proj_data + static_cast<size_t>(i) * projDim;
+
                     this->exact_ann(data, q, proj_q, k, votes,
-                                    &out.indices[i * k],
-                                    &out.distances_sq[i * k],
+                                    &out.indices[static_cast<size_t>(i) * k],
+                                    &out.distances_sq[static_cast<size_t>(i) * k],
                                     ctx);
                 }
 
@@ -398,19 +546,26 @@ namespace drpf
     public:
         DRPFBackendGPU(
             const float *data, long rows, long cols,
-            const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> *proj_matrix,
+            const SrhtProjection *srht,
             const Eigen::VectorXf *norms,
             const std::vector<std::unique_ptr<KdeBinarySplitTree<Eigen::half>>> &cpu_forest,
             int max_buffer)
             : _dim(cols)
         {
+
+            if (!srht || !srht->valid())
+                throw std::invalid_argument("GPU backend requires valid SRHT metadata");
+
+            Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>
+                projection_matrix;
+            materializeSrhtMatrix(*srht, projection_matrix);
+
             std::vector<GPUNode> flat_nodes;
             std::vector<GPULeafInfo> flat_leaf_info;
             std::vector<unsigned int> flat_leaf_data;
             std::vector<int> tree_roots;
             std::vector<int> tree_offsets;
 
-            int proj_cols_per_tree = (int)proj_matrix->cols() / (int)cpu_forest.size();
             for (const auto &tree : cpu_forest)
             {
                 int tree_offset = tree->getOffset();
@@ -432,14 +587,13 @@ namespace drpf
 
             _h = setup_gpu_backend(
                 data, rows, cols,
-                proj_matrix->data(), (int)proj_matrix->cols(),
-                norms->data(),
-                ff, max_buffer);
+                projection_matrix.data(),
+                static_cast<int>(projection_matrix.cols()),
+                norms->data(), ff, max_buffer);
 
             _cpu_fallback = std::make_unique<DRPFBackendCPU>(
-                data, rows, cols,
-                proj_matrix, norms, &cpu_forest,
-                (int)cpu_forest.size(), max_buffer);
+                data, rows, cols, srht, norms, &cpu_forest,
+                static_cast<int>(cpu_forest.size()), max_buffer);
         }
 
         ANNResult ann(const float *query, int dim, int k, int votes) override

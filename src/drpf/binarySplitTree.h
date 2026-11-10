@@ -468,6 +468,28 @@ namespace drpf
             return idx;
         }
 
+        FORCE_INLINE void prefetchLeafData(int leaf_idx) const
+        {
+            PREFETCH(&leafDataPool[leaf_idx]);
+        }
+
+        // one level down; returns false if already at a leaf
+        FORCE_INLINE bool stepDown(int &idx, int depth, const float *__restrict q) const
+        {
+            const RoutingNode &cur = routingPool[idx];
+            if (cur.left == -1)
+                return false;
+            idx = cur.left + (q[offset + depth] >= cur.splitValue);
+            PREFETCH(&routingPool[idx]);
+            return true;
+        }
+
+        inline std::span<const uint32_t> leafSpan(int leaf_idx) const noexcept
+        {
+            const LeafData &leaf = leafDataPool[leaf_idx];
+            return {indices.data() + leaf.start, leaf.getSize()};
+        }
+
         inline std::span<const uint32_t> getLeafIndices(const float *__restrict projectedQuery) const noexcept
         {
             int leaf_idx = findLeafIdxForQuery(projectedQuery);

@@ -6,17 +6,12 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
-#include <optional>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 #include <cstdint>
 #include <span>
 #include <omp.h>
-#include <cstring>
-#include <cstdint>
-#include <string>
-#include <fstream>
-#include <exception>
 
 #ifndef PREFETCH
 #if defined(__GNUC__) || defined(__clang__)
@@ -185,7 +180,7 @@ namespace drpf
         long _rows = 0;
         long _cols = 0;
 
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> projectionMatrix;
+        SrhtProjection srht;
 
         Eigen::Matrix<Eigen::half, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> rndm_projections;
 
@@ -256,30 +251,39 @@ namespace drpf
 
         void compact()
         {
-            int packed_depth = true_depth;
+            const int packed_depth = true_depth;
             if (packed_depth >= internal_depth)
                 return;
 
-            Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>
-                packedMatrix(projectionMatrix.rows(), numTrees * (packed_depth + 1));
+            std::vector<int> packed_blocks;
+            std::vector<int> packed_sel;
 
-            for (int t = 0; t < numTrees; ++t)
+            const size_t packed_cols =
+                static_cast<size_t>(numTrees) * (packed_depth + 1);
+            packed_blocks.reserve(packed_cols);
+            packed_sel.reserve(packed_cols);
+
+            for (int tree = 0; tree < numTrees; ++tree)
             {
-                int old_offset = t * (internal_depth + 1);
-                int new_offset = t * (packed_depth + 1);
+                const int old_offset = tree * (internal_depth + 1);
 
-                packedMatrix.block(0, new_offset, projectionMatrix.rows(), packed_depth + 1) =
-                    projectionMatrix.block(0, old_offset, projectionMatrix.rows(), packed_depth + 1);
+                for (int d = 0; d <= packed_depth; ++d)
+                {
+                    packed_blocks.push_back(srht.col_block[old_offset + d]);
+                    packed_sel.push_back(srht.col_sel[old_offset + d]);
+                }
 
-                forest[t]->updateOffset(packed_depth);
+                forest[tree]->updateOffset(packed_depth);
             }
+
+            srht.col_block = std::move(packed_blocks);
+            srht.col_sel = std::move(packed_sel);
 
             max_search_buffer_size = 0;
             for (const auto &tree : forest)
                 max_search_buffer_size += tree->getMaxLeafSize();
 
-            projectionMatrix = std::move(packedMatrix);
-            this->internal_depth = packed_depth;
+            internal_depth = packed_depth;
         }
 
     public:
@@ -342,39 +346,17 @@ namespace drpf
             this->search_space = this->search_space == 0
                                      ? static_cast<float>(data.rows()) / std::pow(2.0f, split_depth)
                                      : this->search_space;
-            projectionMatrix.resize(data.cols(), (internal_depth + 1) * numTrees);
-            generateRandomMatrix(projectionMatrix, seed);
 
-            rndm_projections.resize(data.rows(), (internal_depth + 1) * numTrees);
-            norms.resize(data.rows());
+            const int proj_cols = (internal_depth + 1) * numTrees;
 
-            if (device_kind == Device::GPU)
-            {
-#ifdef USE_CUDA
+            generateSrhtProjection(srht, _cols, proj_cols, seed);
 
-                extern void compute_gpu_projections_and_norms(
-                    const float *, const float *, void *, float *, int, int, int);
-
-                compute_gpu_projections_and_norms(
-                    data.data(),
-                    projectionMatrix.data(),
-                    rndm_projections.data(),
-                    norms.data(),
-                    static_cast<int>(data.rows()),
-                    static_cast<int>(data.cols()),
-                    static_cast<int>(projectionMatrix.cols()));
-#else
-                throw std::runtime_error("GPU backend requested but built without USE_CUDA");
-#endif
-            }
-            else
-            {
-                rndm_projections.noalias() = (data * projectionMatrix).cast<Eigen::half>();
-                norms = data.rowwise().squaredNorm();
-            }
+            projectDataSrht(srht, data.data(), _rows, _cols, rndm_projections);
+            norms = data.rowwise().squaredNorm();
 
             forest = buildForest(rndm_projections, numTrees, internal_depth,
                                  split_depth, search_space, approximate_search_space_size);
+
             compact();
 
             rndm_projections.resize(0, 0);
@@ -384,7 +366,7 @@ namespace drpf
 #ifdef USE_CUDA
                 backend = std::make_unique<DRPFBackendGPU>(
                     _data_ptr, _rows, _cols,
-                    &projectionMatrix,
+                    &srht,
                     &norms,
                     forest, max_search_buffer_size);
 #else
@@ -395,7 +377,7 @@ namespace drpf
             {
                 backend = std::make_unique<DRPFBackendCPU>(
                     _data_ptr, _rows, _cols,
-                    &projectionMatrix, &norms, &forest,
+                    &srht, &norms, &forest,
                     numTrees, max_search_buffer_size);
             }
         }
@@ -440,8 +422,10 @@ namespace drpf
 
             const Eigen::Map<const Eigen::RowVectorXf> query(query_ptr, 1, length);
 
-            Eigen::RowVectorXf projectedQuery(projectionMatrix.cols());
-            projectedQuery.noalias() = query * projectionMatrix;
+            Eigen::RowVectorXf projectedQuery(static_cast<Eigen::Index>(srht.col_sel.size()));
+            std::vector<float> work(srht.P);
+
+            srhtProject(srht, query_ptr, work.data(), projectedQuery.data());
 
             std::vector<std::pair<int, int>> indices;
             size_t reserve_size = (index == -1) ? this->max_search_buffer_size : (this->max_search_buffer_size / forest.size());
@@ -525,7 +509,14 @@ namespace drpf
             writePod(os, split_data_bandwidth);
             writePod(os, min_ratio);
 
-            writeMatrix(os, projectionMatrix);
+            writePod(os, srht.dim);
+            writePod(os, srht.P);
+            writePod(os, srht.nblocks);
+
+            writePodArray(os, srht.signs.data(), srht.signs.size());
+            writePodArray(os, srht.col_block.data(), srht.col_block.size());
+            writePodArray(os, srht.col_sel.data(), srht.col_sel.size());
+
             writePodArray(os, norms.data(), static_cast<uint64_t>(norms.size()));
 
             writePod(os, static_cast<uint32_t>(forest.size()));
@@ -592,16 +583,50 @@ namespace drpf
             if (numTrees <= 0 || internal_depth < 0)
                 throw std::runtime_error("load: invalid index parameters");
 
-            const uint64_t max_proj_elements =
-                static_cast<uint64_t>(_cols) *
-                static_cast<uint64_t>(numTrees) *
-                static_cast<uint64_t>(internal_depth + 1);
+            readPod(is, srht.dim);
+            readPod(is, srht.P);
+            readPod(is, srht.nblocks);
 
-            readMatrix(is, projectionMatrix, max_proj_elements);
+            const int initial_depth =
+                static_cast<int>(std::ceil(split_depth * 1.7095112913514551) + 1);
+            const uint64_t initial_cols =
+                static_cast<uint64_t>(numTrees) * (initial_depth + 1);
+            const uint64_t packed_cols =
+                static_cast<uint64_t>(numTrees) * (internal_depth + 1);
 
-            if (projectionMatrix.rows() != _cols ||
-                projectionMatrix.cols() != static_cast<Eigen::Index>(numTrees) * (internal_depth + 1))
-                throw std::runtime_error("load: projection matrix shape mismatch");
+            int expected_P = 1;
+            while (expected_P < _cols)
+                expected_P <<= 1;
+
+            if (srht.dim != _cols ||
+                srht.P != expected_P ||
+                srht.nblocks != (initial_cols + srht.P - 1) / srht.P)
+            {
+                throw std::runtime_error("load: invalid SRHT metadata");
+            }
+
+            const uint64_t sign_count =
+                static_cast<uint64_t>(srht.nblocks) * srht.P;
+
+            readPodArray(is, srht.signs, sign_count);
+            readPodArray(is, srht.col_block, packed_cols);
+            readPodArray(is, srht.col_sel, packed_cols);
+
+            if (srht.signs.size() != sign_count ||
+                srht.col_block.size() != packed_cols ||
+                srht.col_sel.size() != packed_cols)
+            {
+                throw std::runtime_error("load: SRHT metadata size mismatch");
+            }
+
+            for (size_t i = 0; i < packed_cols; ++i)
+            {
+                if (srht.col_block[i] < 0 || srht.col_block[i] >= srht.nblocks ||
+                    srht.col_sel[i] < 0 || srht.col_sel[i] >= srht.P)
+                {
+                    throw std::runtime_error("load: invalid SRHT column mapping");
+                }
+            }
 
             {
                 std::vector<float> norms_buf;
@@ -631,7 +656,7 @@ namespace drpf
 #ifdef USE_CUDA
                 backend = std::make_unique<DRPFBackendGPU>(
                     _data_ptr, _rows, _cols,
-                    &projectionMatrix, &norms,
+                    &srht, &norms,
                     forest, max_search_buffer_size);
 #else
                 throw std::runtime_error("GPU backend requested but built without USE_CUDA");
@@ -641,7 +666,7 @@ namespace drpf
             {
                 backend = std::make_unique<DRPFBackendCPU>(
                     _data_ptr, _rows, _cols,
-                    &projectionMatrix, &norms, &forest,
+                    &srht, &norms, &forest,
                     numTrees, max_search_buffer_size);
             }
         }
